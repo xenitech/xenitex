@@ -1,0 +1,166 @@
+/**
+ * Design tokens — single source of truth per UI spec §3. No component may
+ * introduce a raw hex value, px value, or duration outside this file
+ * (enforced by review, and eventually by a lint rule once the component
+ * catalogue exists in 3.1 — see docs/design/review.md).
+ *
+ * Theme selection is a `data-theme` attribute on <html>, not a class or
+ * media-query-only switch, so it can be set explicitly and persisted
+ * per-user (P1-21) independent of OS preference. Dark is the analyst's
+ * default (UI spec §3.1) — the app sets `data-theme="dark"` on first run
+ * when no preference is stored; that wiring lands in 3.1 with the theme
+ * provider, not here.
+ */
+
+:root[data-theme='light'] {
+  --color-surface: #fafafb;
+  --color-surface-sunken: #f2f3f5;
+  --color-surface-raised: #ffffff;
+  --color-border: #dddfe3;
+  --color-border-strong: #c2c6cc;
+  --color-ink: #1a1d21;
+  --color-ink-muted: #5a6069;
+  --color-ink-subtle: #868d95;
+
+  --color-accent-subtle: #e8f1f5;
+}
+
+:root[data-theme='dark'] {
+  --color-surface: #14171a;
+  --color-surface-sunken: #0f1214;
+  --color-surface-raised: #1c2024;
+  --color-border: #2a2f35;
+  --color-border-strong: #3b424a;
+  --color-ink: #e6e8ea;
+  --color-ink-muted: #9aa1a9;
+  --color-ink-subtle: #6c747d;
+
+  --color-accent-subtle: #17303c;
+}
+
+:root {
+  /* Interactive accent — one hue, deliberately desaturated (UI-02): it must
+     never be mistaken for a risk signal. Same value in both themes; only
+     -subtle varies (defined per-theme above) since it needs to sit quietly
+     against a very different surface luminance in each. */
+  --color-accent: #2d6e8e;
+  --color-accent-hover: #255c78;
+
+  /* Risk ramp (UI-02, UI-17, UI-18): the ONLY saturated colours in the
+     product. Ordered by luminance as well as hue so severity survives
+     greyscale/CVD, per UI-17. State colours (success/warning/failure) reuse
+     this ramp rather than introducing a second palette (UI-18) — see the
+     semantic aliases below. Identical in both themes: risk colour is a
+     signal, not a decoration, and must not shift with theme preference. */
+  --color-risk-critical: #9b1c1c;
+  --color-risk-high: #c4571f;
+  --color-risk-medium: #b8862b;
+  --color-risk-low: #4a7c59;
+  --color-risk-info: #5a6069;
+
+  /* Semantic state aliases (UI-18) — never a second palette. */
+  --color-state-failure: var(--color-risk-critical);
+  --color-state-warning: var(--color-risk-medium);
+  --color-state-success: var(--color-risk-low);
+
+  /* Typography (UI-20..UI-26). Font packages are wired in 3.1 (self-hosted
+     via @fontsource, per UI-23); these are the family tokens components
+     reference now so no component ever hardcodes a family name. */
+  --font-sans: 'Inter', 'Vazirmatn', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Consolas, monospace;
+
+  /* Type scale, rem (UI-24). Fixed set — no size outside this list. */
+  --font-size-2xs: 0.75rem; /* 12px */
+  --font-size-xs: 0.8125rem; /* 13px */
+  --font-size-sm: 0.875rem; /* 14px — dense-view body */
+  --font-size-md: 1rem; /* 16px — prose-view body */
+  --font-size-lg: 1.125rem; /* 18px */
+  --font-size-xl: 1.375rem; /* 22px */
+  --font-size-2xl: 1.75rem; /* 28px */
+
+  --font-weight-regular: 400;
+  --font-weight-medium: 500;
+  --font-weight-semibold: 600; /* page titles and the risk value ONLY, per UI-25 */
+
+  /* Spacing scale, px (UI-27). Fixed set — nothing outside this list. */
+  --space-1: 2px;
+  --space-2: 4px;
+  --space-3: 6px;
+  --space-4: 8px;
+  --space-5: 12px;
+  --space-6: 16px;
+  --space-7: 24px;
+  --space-8: 32px;
+  --space-9: 48px;
+
+  /* Radius — hierarchical, not uniform (UI-28). */
+  --radius-none: 0;
+  --radius-control: 4px; /* inputs, buttons, tags */
+  --radius-panel: 8px; /* panels, dialogs */
+
+  /* Elevation — two levels only (UI-29): a border for resting surfaces, one
+     shadow for overlays. No shadow token exists for resting content. */
+  --elevation-overlay-shadow: 0 8px 24px rgba(0, 0, 0, 0.24);
+
+  /* Motion — two durations, one curve (UI-31). --duration-fade is separate
+     and deliberately NOT zeroed under reduced-motion below: UI-33 requires
+     opacity transitions to survive `prefers-reduced-motion` while every
+     other transition is removed. Components must use --duration-fade for
+     opacity and --duration-state/--duration-overlay for everything else —
+     there is no other way to satisfy UI-33 with CSS custom properties alone. */
+  --duration-state: 120ms;
+  --duration-overlay: 200ms;
+  --duration-fade: 150ms;
+  --easing-standard: cubic-bezier(0.2, 0, 0, 1);
+
+  /* Row heights (UI-30) — mirrored as numeric constants in tokens.ts for
+     virtualization math, which needs real numbers, not CSS var strings. */
+  --row-height-compact: 32px;
+  --row-height-comfortable: 40px;
+  /* Single variable components actually consume, switched by --density
+     below — a DataTable never chooses between the two -compact/-comfortable
+     values itself, it just reads --row-height. */
+  --row-height: var(--row-height-compact);
+
+  /* Prose measure (UI-26). */
+  --prose-max-width: 72ch;
+}
+
+/* Density (UI-04, UI-30): set once via `data-density` on <html>, read by
+   every density-sensitive component through --row-height rather than each
+   component branching on the attribute itself. Compact is the default —
+   the attribute only needs to be present at all for comfortable mode. */
+[data-density='comfortable'] {
+  --row-height: var(--row-height-comfortable);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    /* UI-33: remove all transitions except opacity. --duration-fade is
+       intentionally absent from this override — it must keep animating. */
+    --duration-state: 0ms;
+    --duration-overlay: 0ms;
+  }
+}
+
+/* Base surface/ink — without this, only components with an explicit
+   background (panels, the top bar) pick up the theme; <body> stays the
+   browser's default white/transparent and un-backgrounded text (e.g. the
+   app shell's own background) reads as low-contrast ink-on-white instead
+   of ink-on-surface in dark mode. */
+html,
+body {
+  background: var(--color-surface);
+  color: var(--color-ink);
+  height: 100%;
+}
+
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: var(--font-sans);
+  font-size: var(--font-size-sm);
+}

@@ -1,0 +1,32 @@
+/**
+ * UI-03/UI-46: confidence competes with risk for the same visual channel,
+ * so it never uses colour — not the risk ramp, not the accent, nothing
+ * saturated. Filled vs. unfilled segments differ only in fill (ink-muted vs
+ * border), same as any other neutral-chrome element in the product.
+ */
+.meter {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.segments {
+  display: inline-flex;
+  gap: 2px;
+}
+
+.segment {
+  width: 6px;
+  height: 10px;
+  background: var(--color-border);
+  border-radius: var(--radius-none);
+}
+
+.segment[data-filled='true'] {
+  background: var(--color-ink-muted);
+}
+
+.word {
+  font-size: var(--font-size-2xs);
+  color: var(--color-ink-muted);
+}

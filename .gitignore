@@ -1,0 +1,17 @@
+node_modules/
+dist/
+build/
+coverage/
+.turbo/
+*.log
+.env
+.env.*
+!.env.example
+*.sqlite
+.DS_Store
+sbom/*.json
+!sbom/.gitkeep
+deploy/compose/secrets/
+storybook-static/
+test-results/
+playwright-report/

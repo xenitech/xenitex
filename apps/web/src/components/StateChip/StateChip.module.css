@@ -1,0 +1,26 @@
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-4);
+  border-radius: var(
+    --radius-control
+  ); /* UI-28: control radius, not panel radius — this is a tag, not a surface */
+  border: 1px solid var(--color-border);
+  font-size: var(--font-size-2xs);
+  color: var(--color-ink-muted);
+}
+
+/* UI-18: state colours reuse the risk ramp rather than a second palette.
+   Used sparingly (UI-09) — only the genuinely terminal-positive state gets
+   it; every other transition is shape + label only, to keep the Issues risk
+   column as the one bold thing on the row. */
+.chip[data-tone='success'] {
+  color: var(--color-state-success);
+  border-color: var(--color-state-success);
+}
+
+.icon {
+  font-size: var(--font-size-xs);
+  line-height: 1;
+}

@@ -1,0 +1,115 @@
+.page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+}
+
+.title {
+  margin: 0;
+  font-size: var(--font-size-xl);
+  font-weight: var(--font-weight-semibold);
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: var(--space-6);
+}
+
+.tile {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  padding: var(--space-7);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-panel);
+  background: var(--color-surface-raised);
+  text-decoration: none;
+  color: inherit;
+  transition: border-color var(--duration-state) var(--easing-standard);
+}
+
+.tile:hover {
+  border-color: var(--color-accent);
+}
+
+.tileTitle {
+  margin: 0;
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+  color: var(--color-ink-muted);
+}
+
+.riskBands {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.riskBandRow {
+  display: flex;
+  justify-content: space-between;
+  font-size: var(--font-size-sm);
+}
+
+.riskBandLabel {
+  color: var(--color-ink-muted);
+}
+
+.topIssues {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.topIssueRow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  font-size: var(--font-size-xs);
+}
+
+.topIssueTitle {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.slaRow {
+  display: flex;
+  gap: var(--space-7);
+}
+
+.slaRow > div {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  font-size: var(--font-size-xs);
+  color: var(--color-ink-muted);
+}
+
+.slaRow strong {
+  font-size: var(--font-size-lg);
+  color: var(--color-ink);
+}
+
+.slaOverdue {
+  color: var(--color-risk-critical) !important;
+}
+
+.activeScans {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.activeScanRow {
+  display: flex;
+  justify-content: space-between;
+  font-size: var(--font-size-xs);
+}
+
+.muted {
+  color: var(--color-ink-muted);
+  font-size: var(--font-size-xs);
+}

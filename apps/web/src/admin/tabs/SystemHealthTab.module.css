@@ -1,0 +1,36 @@
+.ok {
+  color: var(--color-risk-low);
+  font-size: var(--font-size-xs);
+}
+
+.degraded {
+  color: var(--color-risk-medium);
+  font-size: var(--font-size-xs);
+  padding: var(--space-4);
+  background: var(--color-accent-subtle);
+  border-radius: var(--radius-control);
+  margin: var(--space-5) 0;
+}
+
+.down {
+  color: var(--color-risk-critical);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-medium);
+}
+
+.metrics {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: var(--space-5);
+  padding: var(--space-5) 0;
+}
+
+.metrics > div {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.metrics strong {
+  font-size: var(--font-size-lg);
+}

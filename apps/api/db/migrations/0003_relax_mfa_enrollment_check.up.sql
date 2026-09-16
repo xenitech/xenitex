@@ -1,0 +1,11 @@
+-- The original constraint made "administrator/operator row exists but
+-- mfa_enabled is still false" impossible at the DB layer. But that is
+-- exactly the state a freshly created privileged account is in between
+-- creation and completing enrollment -- apps/web's AuthGate (SEC-09)
+-- already forces MfaEnrollScreen for any signed-in operator/administrator
+-- with mfaEnabled=false, and /setup/administrator has no way to collect a
+-- verified TOTP code before the row must exist (nothing to log in as
+-- yet). Enforcement belongs at the application layer (login/session +
+-- AuthGate), not as an unconditional DB invariant that blocks the only
+-- lifecycle that actually creates these accounts.
+ALTER TABLE users DROP CONSTRAINT mfa_required_for_privileged_roles;

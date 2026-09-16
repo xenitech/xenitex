@@ -1,0 +1,273 @@
+# Reference deployment for a single VPS (Part A.5: 8 vCPU / 32 GB RAM / 500 GB SSD).
+# Hardening below is the starting point for SEC-02/SEC-03/SEC-04; Step 5.3 adds the
+# automated check that verifies these settings against the running containers
+# rather than trusting this file to stay accurate by itself.
+#
+# Images are placeholders (":dev") until Step 5.1 produces pinned, signed,
+# offline-bundle image references — this file is not yet the install artifact.
+#
+# `name:` is pinned explicitly and MUST NOT be removed. Without it, Docker
+# Compose derives the project name from the current directory's basename --
+# which for this path is literally "compose" -- and will silently match
+# containers/volumes belonging to any *other* unrelated compose project also
+# run from a directory named "compose" (this happened once during
+# development: an unrelated homelab stack's `postgres` service was matched
+# and recreated by this file before this line was added). Pinning the name
+# makes that collision structurally impossible regardless of directory name.
+name: xenitex
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    user: postgres
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /var/run/postgresql
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    environment:
+      POSTGRES_DB: xenitex
+      POSTGRES_USER_FILE: /run/secrets/postgres_user
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    # NOTE: the source files (deploy/compose/secrets/*.txt) must be
+    # world-readable (chmod 644, not 600). Compose bind-mounts a file-based
+    # secret from the host as-is, preserving the HOST file's ownership --
+    # this container runs as the non-root `postgres` user (uid 70, per
+    # SEC-02), which never matches the host user's uid, so a host-side
+    # `chmod 600` is silently unreadable inside the container. Per-secret
+    # `mode:`/`uid:`/`gid:` overrides exist in the Compose Specification but
+    # are NOT honored by plain `docker compose` outside Swarm mode (verified:
+    # it logs "secrets `uid`, `gid` and `mode` are not supported, they will
+    # be ignored" and the container still fails) -- chmod the host file
+    # instead, there is no in-file override that actually works here.
+    secrets:
+      - postgres_user
+      - postgres_password
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks:
+      - internal
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 4g
+
+  # Valkey (BSD-3-Clause), not Redis: Redis 7.4+ relicensed to RSALv2/SSPLv1,
+  # which is a real question for a closed-source commercial redistribution
+  # (see docs/licence-review.md, Finding 2). Valkey is the Linux
+  # Foundation-backed, wire-protocol-compatible fork of pre-relicense Redis --
+  # ioredis/BullMQ work against it unmodified, so this removes the licence
+  # question rather than managing around it. Pin to a digest for the actual
+  # release artifact (LEG-04), not just the ":8-alpine" tag used here.
+  redis:
+    image: valkey/valkey:8-alpine
+    restart: unless-stopped
+    # Explicit non-root user (uid 999, gid 1000 -- the image's own `valkey`
+    # account). Without this, the container starts as root and the image's
+    # entrypoint uses `setpriv` to drop to the valkey user itself, which
+    # requires CAP_SETUID/CAP_SETGID -- capabilities `cap_drop: ALL` below
+    # removes, causing a `setresuid failed: Operation not permitted` crash
+    # loop. Starting directly as the target uid sidesteps the entrypoint's
+    # own privilege-drop entirely, so it never needs those capabilities.
+    user: '999:1000'
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    command: ['valkey-server', '--appendonly', 'yes']
+    volumes:
+      - redisdata:/data
+    networks:
+      - internal
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 1g
+
+  # Named volumes are created root:root by the Docker daemon, but api/worker
+  # run as the fixed non-root uid 10001 (SEC-02) with no capability to chown
+  # anything themselves (cap_drop: ALL). Discovered the hard way: a fresh
+  # `blobstore` volume left FilesystemBlobStore's writes failing with EACCES
+  # even though the schema/session plumbing was otherwise correct. This runs
+  # once as root, fixes ownership, and exits -- api/worker wait for that exit
+  # via `condition: service_completed_successfully` before they start.
+  blobstore-init:
+    image: alpine:3.20
+    user: root
+    command: ['chown', '-R', '10001:10001', '/var/lib/xenitex/blob-store']
+    volumes:
+      - blobstore:/var/lib/xenitex/blob-store
+    restart: 'no'
+
+  api:
+    build:
+      context: ../..
+      dockerfile: deploy/compose/api.Dockerfile
+    image: xenitex-api:dev
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    environment:
+      API_HOST: '0.0.0.0' # bound only inside `internal`; SEC-01's private-interface binding is enforced by the host firewall/reverse-proxy, not this container
+      API_PORT: '8443'
+      BLOB_STORE_ROOT: '/var/lib/xenitex/blob-store'
+    env_file:
+      - ./.env # SEC-05: 0600 permissions expected; never committed
+    depends_on:
+      postgres:
+        condition: service_started
+      redis:
+        condition: service_started
+      blobstore-init:
+        condition: service_completed_successfully
+    volumes:
+      # DATA-01: durable evidence storage, shared with `worker` (which
+      # writes here) at the same path — see FilesystemBlobStore in
+      # packages/db for why this lives in a shared volume rather than
+      # either container's own filesystem.
+      - blobstore:/var/lib/xenitex/blob-store
+    networks:
+      - internal
+      - edge
+    # OPS-03: liveness only (not /readyz) -- a transient DB/Redis blip
+    # shouldn't make Docker restart a process that's otherwise fine. Hits
+    # the container's own internal port directly; /healthz is deliberately
+    # unprefixed and never proxied through nginx (see server.ts), so this
+    # is the only thing that ever calls it.
+    healthcheck:
+      test: ['CMD', 'wget', '--spider', '-q', 'http://127.0.0.1:8443/healthz']
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    deploy:
+      resources:
+        limits:
+          cpus: '3'
+          memory: 8g
+
+  # SEC-03: scanner adapters run in their own containers, separate from the API,
+  # hold no database credentials, and only egress to scan targets on the
+  # customer's network — never to postgres/redis directly and never to the
+  # public internet (SEC-04: egress denied by default).
+  worker:
+    build:
+      context: ../..
+      dockerfile: deploy/compose/worker.Dockerfile
+    image: xenitex-worker:dev
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp
+      # SEC-03 per-job working directory, discarded on container restart.
+      # uid/gid pinned to the container's own non-root user: a bare tmpfs
+      # mount is created root:root at container start regardless of what the
+      # Dockerfile chowned at build time (that chown only ever affected the
+      # image layer, which this mount replaces) -- observed as a real EACCES
+      # on the worker's first scan run before this was added, not a
+      # hypothetical.
+      - /var/run/xenitex-job:uid=10001,gid=10001,mode=0700
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    # docs/adr/0008-worker-capabilities.md: NET_RAW was granted here for
+    # Nmap-style raw-socket SYN scanning. The actual P2-04 implementation
+    # (packages/scanner-adapters/src/tcp-connect-adapter.ts) is a plain
+    # connect()-based scanner instead (Nmap/NPSL bundling is blocked on an
+    # unresolved OEM licence question — docs/licence-review.md Finding 1),
+    # which needs no elevated capability at all. ADR 0008 called this exact
+    # substitution out as its own supersession trigger; no capability is
+    # added back here.
+    environment:
+      BLOB_STORE_ROOT: '/var/lib/xenitex/blob-store'
+    env_file:
+      - ./.env
+    depends_on:
+      postgres:
+        condition: service_started
+      redis:
+        condition: service_started
+      blobstore-init:
+        condition: service_completed_successfully
+    volumes:
+      - blobstore:/var/lib/xenitex/blob-store
+    networks:
+      - internal
+      - scan_egress
+    deploy:
+      resources:
+        limits:
+          cpus: '3'
+          memory: 4g
+
+  web:
+    build:
+      context: ../..
+      dockerfile: deploy/compose/web.Dockerfile
+    image: xenitex-web:dev
+    restart: unless-stopped
+    read_only: true
+    # nginx-unprivileged's nginx.conf puts everything writable -- pid file,
+    # proxy_temp, client_temp, fastcgi/uwsgi/scgi_temp -- under /tmp (checked
+    # against the actual image, not assumed). Without this, `read_only: true`
+    # makes /tmp part of the read-only root fs and nginx fails to start.
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    # No `ports:` mapping existed at all until now -- the container was
+    # healthy and serving on 8080 *inside* the Docker network the whole
+    # time, but nothing published that port to the host, so a browser
+    # outside Docker had no path to it regardless of container state.
+    # SEC-01: bind to a configurable interface, private by default -- set
+    # WEB_HOST_BIND in deploy/compose/.env to a specific private IP for a
+    # real deployment; 0.0.0.0 here is only reasonable for local dev/testing.
+    ports:
+      - '${WEB_HOST_BIND:-0.0.0.0}:8080:8080'
+    networks:
+      - edge
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 512m
+
+networks:
+  # Reachable from the customer's private network only (SEC-01).
+  edge:
+  # api <-> postgres/redis/worker, unreachable from outside the compose network.
+  internal:
+    internal: true
+  # worker's only egress path, scoped to the authorized_scope CIDR ranges at the
+  # host firewall level — this network being separate from `internal` is what
+  # makes SEC-04's default-deny egress enforceable per-container rather than
+  # per-host.
+  scan_egress:
+
+secrets:
+  postgres_user:
+    file: ./secrets/postgres_user.txt
+  postgres_password:
+    file: ./secrets/postgres_password.txt
+
+volumes:
+  pgdata:
+  redisdata:
+  blobstore:

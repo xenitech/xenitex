@@ -1,0 +1,9 @@
+DO $$
+BEGIN
+  EXECUTE format(
+    'ALTER DEFAULT PRIVILEGES FOR ROLE %I IN SCHEMA public REVOKE USAGE, SELECT ON SEQUENCES FROM xenitex_app',
+    current_user
+  );
+END
+$$;
+REVOKE USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public FROM xenitex_app;

@@ -1,0 +1,8 @@
+.trigger {
+  white-space: nowrap;
+}
+
+.actions {
+  flex-direction: row;
+  justify-content: flex-end;
+}

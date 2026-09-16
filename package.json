@@ -1,0 +1,32 @@
+{
+  "name": "xenitex-appliance",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Read-only on-premise vulnerability management appliance",
+  "license": "UNLICENSED",
+  "packageManager": "pnpm@9.12.0",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "build": "turbo run build",
+    "lint": "turbo run lint",
+    "typecheck": "turbo run typecheck",
+    "test": "turbo run test",
+    "test:integration": "turbo run test:integration",
+    "sbom": "node scripts/generate-sbom.mjs",
+    "assert:no-remote-exec-deps": "node scripts/assert-no-remote-exec-deps.mjs",
+    "audit:deps": "pnpm audit --prod",
+    "format": "prettier --check .",
+    "format:write": "prettier --write ."
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.9.0",
+    "@types/node": "^20.14.0",
+    "eslint": "^9.9.0",
+    "prettier": "^3.3.3",
+    "turbo": "^2.1.0",
+    "typescript": "^5.5.4",
+    "typescript-eslint": "^8.3.0"
+  }
+}

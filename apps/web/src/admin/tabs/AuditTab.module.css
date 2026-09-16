@@ -1,0 +1,10 @@
+.intact {
+  color: var(--color-risk-low);
+  font-size: var(--font-size-xs);
+}
+
+.broken {
+  color: var(--color-risk-critical);
+  font-weight: var(--font-weight-medium);
+  font-size: var(--font-size-xs);
+}

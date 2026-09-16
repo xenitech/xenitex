@@ -1,0 +1,45 @@
+/**
+ * UI-02/UI-09: the risk column is the ONLY saturated, semibold element on
+ * an Issues row — every colour and weight decision here is deliberate, not
+ * a default. UI-17: colour is always paired with the text band label and
+ * the fixed-position ordinal bar; nothing here signals severity by colour
+ * alone.
+ */
+.badge {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--space-4);
+}
+
+.bar {
+  display: inline-flex;
+  gap: 2px;
+  align-items: flex-end;
+  height: 12px;
+}
+
+.segment {
+  width: 4px;
+  height: 100%;
+  background: var(--color-border);
+  border-radius: var(--radius-none);
+}
+
+.segment[data-filled='true'] {
+  background: var(--segment-color);
+}
+
+.score {
+  font-variant-numeric: tabular-nums;
+  font-weight: var(
+    --font-weight-semibold
+  ); /* UI-25: semibold reserved for page titles and the risk value */
+  font-size: var(--font-size-md);
+  color: var(--segment-color);
+}
+
+.band {
+  font-size: var(--font-size-2xs);
+  color: var(--color-ink-muted);
+  text-transform: none; /* UI-11: no tracked-out uppercase labels */
+}

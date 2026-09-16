@@ -1,0 +1,35 @@
+.row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-6);
+  height: var(--row-height);
+  padding: 0 var(--space-6);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.cell {
+  height: 12px;
+  border-radius: var(--radius-none); /* UI-28: a row is a record, not a card, even mid-load */
+  background: var(--color-border);
+  /* UI-32/UI-16: this is the one sanctioned exception to "nothing animates
+     on page load" — a loading placeholder's pulse communicates "this is
+     still arriving," which is the loading state itself, not decoration. */
+  animation: pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 0.6;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cell {
+    animation: none;
+    opacity: 0.8;
+  }
+}

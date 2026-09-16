@@ -1,0 +1,30 @@
+{
+  "name": "@xenitex/db",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "generate": "kysely-codegen --url \"$DATABASE_URL\" --dialect postgres --out-file src/generated/schema.ts && prettier --write src/generated/schema.ts",
+    "build": "tsc -p tsconfig.json",
+    "lint": "eslint src --max-warnings=0",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "tsx --test $(find src -name \"*.test.ts\" -not -name \"*.integration.test.ts\")",
+    "test:integration": "tsx --test $(find src -name \"*.integration.test.ts\" 2>/dev/null); true",
+    "migrate": "tsx src/migrate.ts up",
+    "migrate:down": "tsx src/migrate.ts down",
+    "set-role-passwords": "tsx src/set-role-passwords.ts"
+  },
+  "dependencies": {
+    "@xenitex/domain": "workspace:^",
+    "kysely": "^0.27.4",
+    "pg": "^8.13.1"
+  },
+  "devDependencies": {
+    "@types/pg": "^8.11.10",
+    "kysely-codegen": "^0.17.0",
+    "tsx": "^4.16.2",
+    "typescript": "^5.5.4"
+  }
+}

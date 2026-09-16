@@ -1,0 +1,3760 @@
+openapi: 3.1.0
+info:
+  title: Xenitex Appliance API
+  version: 1.0.0
+  description: >
+    v1 of the on-premise appliance API. This document is the single source of
+    truth (P1-01) — the TypeScript client and types in this package are
+    generated from it, never hand-written (P1-02).
+
+    Conventions (see docs/adr/0006-api-conventions.md, accepted at GATE 1):
+    opaque cursor pagination on every collection (`?cursor=&limit=`, response
+    `{ items, nextCursor }`); RFC 9457 Problem Details on every non-2xx
+    response; `Idempotency-Key` required on every creation POST;
+    `ETag`/`If-Match` required on every mutation of a mutable resource; URI
+    path versioning (`/v1/...`); long-running operations return `202` with a
+    `Location` header pointing at a pollable resource, never a blocking
+    request.
+
+    JSON casing: camelCase, matching packages/domain. Any field whose value
+    originates from a scanned target (SEC-17/AIP-02 — banners, headers,
+    certificate subjects, hostnames, identity-key values, OS/service/product
+    inference) carries an `Untrusted` suffix in its property name. This is
+    the same greppable-naming convention as the `_untrusted` column suffix in
+    docs/adr/0007-schema-conventions.md, extended to the API boundary so a
+    frontend consumer can never mistake such a value for first-party data —
+    it must be escaped on output, never rendered as HTML, never interpreted.
+servers:
+  - url: /v1
+tags:
+  - name: Auth
+  - name: Setup
+  - name: Users
+  - name: OrganizationSettings
+  - name: FeatureFlags
+  - name: Assets
+  - name: AssetGroups
+  - name: Vulnerabilities
+  - name: Observations
+  - name: Issues
+  - name: SavedViews
+  - name: Exceptions
+  - name: RiskScoring
+  - name: SlaPolicies
+  - name: Scopes
+  - name: ExclusionRules
+  - name: ScanProfiles
+  - name: PacingCeilings
+  - name: FragileDeviceRules
+  - name: BlackoutWindows
+  - name: ScanSchedules
+  - name: Scans
+  - name: VerificationScans
+  - name: GlobalStop
+  - name: ScannerAdapters
+  - name: Reports
+  - name: Notifications
+  - name: Audit
+  - name: Retention
+  - name: Backup
+  - name: SystemHealth
+  - name: Dashboard
+security:
+  - sessionCookie: []
+paths:
+  # ---------------------------------------------------------------- Auth
+  /auth/login:
+    post:
+      tags: [Auth]
+      operationId: login
+      summary: Sign in with email and password
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string }
+      responses:
+        '200':
+          description: Signed in, or MFA challenge required.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/CurrentUser'
+                  - $ref: '#/components/schemas/MfaChallengeRequired'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '423': { $ref: '#/components/responses/LockedOut' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+  /auth/mfa/challenge:
+    post:
+      tags: [Auth]
+      operationId: completeMfaChallenge
+      summary: Complete sign-in with a TOTP code or recovery code
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [challengeToken, code]
+              properties:
+                challengeToken: { type: string }
+                code: { type: string }
+      responses:
+        '200':
+          description: Signed in.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CurrentUser' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+  /auth/mfa/enroll:
+    post:
+      tags: [Auth]
+      operationId: enrollMfa
+      summary: Begin TOTP enrolment (SEC-09) for the signed-in user
+      responses:
+        '200':
+          description: Provisioning secret and QR payload.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [enrollmentToken, secret, qrCodeUri]
+                properties:
+                  enrollmentToken: { type: string }
+                  secret: { type: string }
+                  qrCodeUri: { type: string }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /auth/mfa/enroll/confirm:
+    post:
+      tags: [Auth]
+      operationId: confirmMfaEnrollment
+      summary: Confirm TOTP enrolment; returns one-time recovery codes
+      description: >
+        Recovery codes are issued exactly once here and stored hashed
+        (SEC-09) — there is no endpoint to retrieve them again later.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [enrollmentToken, code]
+              properties:
+                enrollmentToken: { type: string }
+                code: { type: string }
+      responses:
+        '200':
+          description: MFA enabled.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [recoveryCodes]
+                properties:
+                  recoveryCodes:
+                    type: array
+                    items: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /auth/logout:
+    post:
+      tags: [Auth]
+      operationId: logout
+      summary: Invalidate the current session
+      responses:
+        '204': { description: Signed out. }
+  /auth/password:
+    post:
+      tags: [Auth]
+      operationId: changePassword
+      summary: Change the signed-in user's password (SEC-07); invalidates other sessions
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [currentPassword, newPassword]
+              properties:
+                currentPassword: { type: string }
+                newPassword: { type: string, minLength: 12 }
+      responses:
+        '204': { description: Password changed. }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /auth/session:
+    get:
+      tags: [Auth]
+      operationId: getCurrentSession
+      summary: Current user, role, and server-computed UI capability payload
+      description: P1-23 — this payload drives permission-aware rendering; it is never the sole enforcement (SEC-13).
+      responses:
+        '200':
+          description: 'OK.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CurrentUser' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  # --------------------------------------------------------------- Setup
+  /setup/status:
+    get:
+      tags: [Setup]
+      operationId: getSetupStatus
+      summary: First-run wizard progress (P1-06)
+      security: []
+      responses:
+        '200':
+          description: 'OK.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SetupStatus' }
+  /setup/administrator:
+    post:
+      tags: [Setup]
+      operationId: createSetupAdministrator
+      summary: Create the first administrator account
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, displayName, password]
+              properties:
+                email: { type: string, format: email }
+                displayName: { type: string }
+                password: { type: string, minLength: 12 }
+      responses:
+        '201':
+          {
+            description: 'Created.',
+            content: { application/json: { schema: { $ref: '#/components/schemas/User' } } },
+          }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /setup/organization:
+    post:
+      tags: [Setup]
+      operationId: setSetupOrganization
+      summary: Set organisation name and timezone
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [organizationName, timezone]
+              properties:
+                organizationName: { type: string }
+                timezone: { type: string, description: IANA timezone name (DATA-06). }
+      responses:
+        '204': { description: Saved. }
+  /setup/tls:
+    post:
+      tags: [Setup]
+      operationId: setSetupTls
+      summary: Choose TLS mode (SEC-06) — self-signed (default) or customer certificate
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [tlsMode]
+              properties:
+                tlsMode: { type: string, enum: [self_signed, customer_certificate] }
+      responses:
+        '204': { description: Saved. }
+  /setup/initial-scope:
+    post:
+      tags: [Setup]
+      operationId: createSetupInitialScope
+      summary: Declare the first authorized scope (SAFE-01)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AuthorizedScopeCreate' }
+      responses:
+        '201':
+          {
+            description: 'Created.',
+            content:
+              { application/json: { schema: { $ref: '#/components/schemas/AuthorizedScope' } } },
+          }
+        '400': { $ref: '#/components/responses/ValidationError' }
+  /setup/safety-acknowledgement:
+    post:
+      tags: [Setup]
+      operationId: acknowledgeSetupSafetyDefaults
+      summary: Record review and acknowledgement of scan safety defaults (B.1)
+      responses:
+        '204': { description: Acknowledged. }
+  /setup/complete:
+    post:
+      tags: [Setup]
+      operationId: completeSetup
+      summary: Mark first-run setup complete
+      responses:
+        '204': { description: Setup complete. }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  # --------------------------------------------------------------- Users
+  /users:
+    get:
+      tags: [Users]
+      operationId: listUsers
+      summary: List users (administrator only)
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200': { $ref: '#/components/responses/UserListPage' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      tags: [Users]
+      operationId: createUser
+      summary: Create a user (administrator only)
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, displayName, role, password]
+              properties:
+                email: { type: string, format: email }
+                displayName: { type: string }
+                role: { $ref: '#/components/schemas/UserRole' }
+                password: { type: string, minLength: 12 }
+      responses:
+        '201':
+          {
+            description: 'Created.',
+            content: { application/json: { schema: { $ref: '#/components/schemas/User' } } },
+          }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /users/{userId}:
+    parameters:
+      - $ref: '#/components/parameters/UserIdPath'
+    get:
+      tags: [Users]
+      operationId: getUser
+      summary: Get a user
+      responses:
+        '200':
+          {
+            description: 'OK.',
+            content: { application/json: { schema: { $ref: '#/components/schemas/User' } } },
+          }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [Users]
+      operationId: updateUser
+      summary: Update role or active status (administrator only)
+      parameters:
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                role: { $ref: '#/components/schemas/UserRole' }
+                displayName: { type: string }
+      responses:
+        '200':
+          description: 'OK.'
+          content: { application/json: { schema: { $ref: '#/components/schemas/User' } } }
+          headers: { ETag: { $ref: '#/components/headers/ETag' } }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/StaleResource' }
+  /users/{userId}/deactivate:
+    parameters:
+      - $ref: '#/components/parameters/UserIdPath'
+    post:
+      tags: [Users]
+      operationId: deactivateUser
+      summary: Deactivate a user and revoke their sessions (administrator only)
+      responses:
+        '204': { description: Deactivated. }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # -------------------------------------------------- OrganizationSettings
+  /organization-settings:
+    get:
+      tags: [OrganizationSettings]
+      operationId: getOrganizationSettings
+      summary: Get organisation settings
+      responses:
+        '200':
+          {
+            description: 'OK.',
+            content:
+              {
+                application/json: { schema: { $ref: '#/components/schemas/OrganizationSettings' } },
+              },
+          }
+    patch:
+      tags: [OrganizationSettings]
+      operationId: updateOrganizationSettings
+      summary: Update organisation settings
+      parameters: [{ $ref: '#/components/parameters/IfMatch' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/OrganizationSettings' }
+      responses:
+        '200':
+          description: 'OK.'
+          content:
+            { application/json: { schema: { $ref: '#/components/schemas/OrganizationSettings' } } }
+          headers: { ETag: { $ref: '#/components/headers/ETag' } }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/StaleResource' }
+
+  # -------------------------------------------------------- FeatureFlags
+  /feature-flags:
+    get:
+      tags: [FeatureFlags]
+      operationId: listFeatureFlags
+      summary: List feature flags (EXT-07). Client-side use is cosmetic only (SEC-13).
+      responses:
+        '200':
+          description: 'OK.'
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/FeatureFlag' } }
+  /feature-flags/{key}:
+    parameters:
+      - name: key
+        in: path
+        required: true
+        schema: { type: string }
+    patch:
+      tags: [FeatureFlags]
+      operationId: updateFeatureFlag
+      summary: Enable/disable a flag (administrator only)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [isEnabled]
+              properties:
+                isEnabled: { type: boolean }
+      responses:
+        '200':
+          {
+            description: 'OK.',
+            content: { application/json: { schema: { $ref: '#/components/schemas/FeatureFlag' } } },
+          }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422':
+          description: >
+            Attempt to enable a flag with no implementation behind it
+            (e.g. `remediation_executor_enabled` — EXT-09/PRIN-01). Hard-off
+            by construction, not merely by default.
+          content:
+            {
+              application/problem+json: { schema: { $ref: '#/components/schemas/ProblemDetails' } },
+            }
+
+  # -------------------------------------------------------------- Assets
+  /assets:
+    get:
+      tags: [Assets]
+      operationId: listAssets
+      summary: List assets (virtualised list, faceted filters, P1-09/P1-22)
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+        - name: lifecycleState
+          in: query
+          schema: { $ref: '#/components/schemas/AssetLifecycleState' }
+        - name: criticality
+          in: query
+          schema: { $ref: '#/components/schemas/AssetCriticality' }
+        - name: exposure
+          in: query
+          schema: { $ref: '#/components/schemas/ExposureClassification' }
+        - name: tag
+          in: query
+          schema: { type: string }
+        - name: isFragile
+          in: query
+          schema: { type: boolean }
+        - name: q
+          in: query
+          description: Free-text search over address/hostname/tags.
+          schema: { type: string }
+      responses:
+        '200': { $ref: '#/components/responses/AssetListPage' }
+  /assets/{assetId}:
+    parameters: [{ $ref: '#/components/parameters/AssetIdPath' }]
+    get:
+      tags: [Assets]
+      operationId: getAsset
+      summary: Asset detail — identity keys, address/hostname history, services (P1-09)
+      responses:
+        '200':
+          description: 'OK.'
+          content: { application/json: { schema: { $ref: '#/components/schemas/Asset' } } }
+          headers: { ETag: { $ref: '#/components/headers/ETag' } }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [Assets]
+      operationId: updateAsset
+      summary: Update owner, criticality, tags
+      parameters: [{ $ref: '#/components/parameters/IfMatch' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                ownerTeam: { oneOf: [{ type: string }, { type: 'null' }] }
+                businessCriticality: { $ref: '#/components/schemas/AssetCriticality' }
+                tags: { type: array, items: { type: string } }
+      responses:
+        '200':
+          description: 'OK.'
+          content: { application/json: { schema: { $ref: '#/components/schemas/Asset' } } }
+          headers: { ETag: { $ref: '#/components/headers/ETag' } }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/StaleResource' }
+  /assets/{assetId}/issues:
+    parameters: [{ $ref: '#/components/parameters/AssetIdPath' }]
+    get:
+      tags: [Assets]
+      operationId: listAssetIssues
+      summary: Open issues for this asset
+      parameters:
+        [{ $ref: '#/components/parameters/Cursor' }, { $ref: '#/components/parameters/Limit' }]
+      responses:
+        '200': { $ref: '#/components/responses/IssueListPage' }
+  /assets/{assetId}/scan-history:
+    parameters: [{ $ref: '#/components/parameters/AssetIdPath' }]
+    get:
+      tags: [Assets]
+      operationId: listAssetScanHistory
+      summary: Scan runs that targeted this asset
+      parameters:
+        [{ $ref: '#/components/parameters/Cursor' }, { $ref: '#/components/parameters/Limit' }]
+      responses:
+        '200': { $ref: '#/components/responses/ScanRunListPage' }
+  /asset-merge-candidates:
+    get:
+      tags: [Assets]
+      operationId: listAssetMergeCandidates
+      summary: Low-confidence merge candidates awaiting operator review (MOD-06)
+      parameters:
+        [{ $ref: '#/components/parameters/Cursor' }, { $ref: '#/components/parameters/Limit' }]
+      responses:
+        '200':
+          description: 'OK.'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, nextCursor]
+                properties:
+                  items: { type: array, items: { $ref: '#/components/schemas/AssetMergeEvent' } }
+                  nextCursor: { oneOf: [{ type: string }, { type: 'null' }] }
+  /asset-merges:
+    post:
+      tags: [Assets]
+      operationId: createAssetMerge
+      summary: Operator-confirmed merge of two assets (MOD-06)
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [survivorAssetId, mergedAssetId]
+              properties:
+                survivorAssetId: { type: string }
+                mergedAssetId: { type: string }
+      responses:
+        '201':
+          {
+            description: 'Created.',
+            content:
+              { application/json: { schema: { $ref: '#/components/schemas/AssetMergeEvent' } } },
+          }
+        '400': { $ref: '#/components/responses/ValidationError' }
+  /asset-merge-events/{eventId}/reverse:
+    parameters:
+      - name: eventId
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      tags: [Assets]
+      operationId: reverseAssetMerge
+      summary: Reverse an incorrect merge (MOD-06) — restores the merged asset to active, keeps its history
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties:
+                reason: { type: string }
+      responses:
+        '200':
+          {
+            description: 'OK.',
+            content:
+              { application/json: { schema: { $ref: '#/components/schemas/AssetMergeEvent' } } },
+          }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # --------------------------------------------------------- AssetGroups
+  /asset-groups:
+    get:
+      tags: [AssetGroups]
+      operationId: listAssetGroups
+      summary: List asset groups
+      parameters:
+        [{ $ref: '#/components/parameters/Cursor' }, { $ref: '#/components/parameters/Limit' }]
+      responses:
+        '200':
+          description: 'OK.'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, nextCursor]
+                properties:
+                  items: { type: array, items: { $ref: '#/components/schemas/AssetGroup' } }
+                  nextCursor: { oneOf: [{ type: string }, { type: 'null' }] }
+    post:
+      tags: [AssetGroups]
+      operationId: createAssetGroup
+      summary: Create an asset group
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/AssetGroupCreate' } } }
+      responses:
+        '201':
+          {
+            description: 'Created.',
+            content: { application/json: { schema: { $ref: '#/components/schemas/AssetGroup' } } },
+          }
+        '400': { $ref: '#/components/responses/ValidationError' }
+  /asset-groups/{groupId}:
+    parameters:
+      - name: groupId
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [AssetGroups]
+      operationId: getAssetGroup
+      summary: Get an asset group
+      responses:
+        '200':
+          {
+            description: 'OK.',
+            content: { application/json: { schema: { $ref: '#/components/schemas/AssetGroup' } } },
+          }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [AssetGroups]
+      operationId: updateAssetGroup
+      summary: Update an asset group
+      parameters: [{ $ref: '#/components/parameters/IfMatch' }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/AssetGroupCreate' } } }
+      responses:
+        '200':
+          {
+            description: 'OK.',
+            content: { application/json: { schema: { $ref: '#/components/schemas/AssetGroup' } } },
+          }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/StaleResource' }
+    delete:
+      tags: [AssetGroups]
+      operationId: deleteAssetGroup
+      summary: Delete an asset group
+      responses:
+        '204': { description: Deleted. }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /asset-groups/{groupId}/members/{assetId}:
+    parameters:
+      - name: groupId
+        in: path
+        required: true
+        schema: { type: string }
+      - $ref: '#/components/parameters/AssetIdPath'
+    put:
+      tags: [AssetGroups]
+      operationId: addAssetGroupMember
+      summary: Add an asset to a static group
+      responses:
+        '204': { description: Added. }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [AssetGroups]
+      operationId: removeAssetGroupMember
+      summary: Remove an asset from a static group
+      responses:
+        '204': { description: Removed. }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # ------------------------------------------------------- Vulnerabilities
+  /vulnerabilities/{vulnerabilityId}:
+    parameters:
+      - name: vulnerabilityId
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [Vulnerabilities]
+      operationId: getVulnerability
+      summary: Get a vulnerability catalogue entry
+      responses:
+        '200':
+          {
+            description: 'OK.',
+            content:
+              { application/json: { schema: { $ref: '#/components/schemas/Vulnerability' } } },
+          }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /vulnerability-data-imports:
+    get:
+      tags: [Vulnerabilities]
+      operationId: listVulnerabilityDataImports
+      summary: Import history (P2-06/P2-07) — feeds System Health's vulnerability-data-age display
+      parameters:
+        [{ $ref: '#/components/parameters/Cursor' }, { $ref: '#/components/parameters/Limit' }]
+      responses:
+        '200':
+          description: 'OK.'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, nextCursor]
+                properties:
+                  items:
+                    { type: array, items: { $ref: '#/components/schemas/VulnerabilityDataImport' } }
+                  nextCursor: { oneOf: [{ type: string }, { type: 'null' }] }
+
+  # ---------------------------------------------------------- Observations
+  /observations/{observationId}:
+    parameters:
+      - name: observationId
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [Observations]
+      operationId: getObservation
+      summary: Evidence detail (MOD-21) — the matched banner, response excerpt, or port state, linked to its raw artifact
+      responses:
+        '200':
+          {
+            description: 'OK.',
+            content: { application/json: { schema: { $ref: '#/components/schemas/Observation' } } },
+          }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /raw-artifacts/{rawArtifactId}/download:
+    parameters:
+      - name: rawArtifactId
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [Observations]
+      operationId: downloadRawArtifact
+      summary: Download the immutable raw scanner artifact an observation is backed by (DATA-01)
+      responses:
+        '200':
+          description: Raw artifact bytes.
+          content: { application/octet-stream: { schema: { type: string, format: binary } } }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # ---------------------------------------------------------------- Issues
+  /issues:
+    get:
+      tags: [Issues]
+      operationId: listIssues
+      summary: The primary triage screen (P1-11) — virtualised, faceted, sortable by risk
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+        - name: state
+          in: query
+          schema: { type: array, items: { $ref: '#/components/schemas/IssueState' } }
+          style: form
+          explode: true
+        - name: confidenceFloor
+          in: query
+          description: MOD-20 — list defaults to a confidence floor the user can lower deliberately.
+          schema: { type: number, minimum: 0, maximum: 1, default: 0.4 }
+        - name: minRiskScore
+          in: query
+          schema: { type: number, minimum: 0, maximum: 100 }
+        - name: assetId
+          in: query
+          schema: { type: string }
+        - name: ownerUserId
+          in: query
+          schema: { type: string }
+        - name: overdue
+          in: query
+          schema: { type: boolean }
+        - name: sort
+          in: query
+          schema:
+            { type: string, enum: [riskScore, dueDate, firstSeen, lastSeen], default: riskScore }
+      responses:
+        '200': { $ref: '#/components/responses/IssueListPage' }
+  /issues/{issueId}:
+    parameters: [{ $ref: '#/components/parameters/IssueIdPath' }]
+    get:
+      tags: [Issues]
+      operationId: getIssue
+      summary: Issue detail — evidence, contributing observations, risk explanation (MOD-17/MOD-21), remediation guidance
+      responses:
+        '200':
+          description: 'OK.'
+          content: { application/json: { schema: { $ref: '#/components/schemas/IssueDetail' } } }
+          headers: { ETag: { $ref: '#/components/headers/ETag' } }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [Issues]
+      operationId: updateIssue
+      summary: Update owner or due date (non-lifecycle fields)
+      parameters: [{ $ref: '#/components/parameters/IfMatch' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                ownerUserId: { oneOf: [{ type: string }, { type: 'null' }] }
+                dueDate: { oneOf: [{ type: string, format: date-time }, { type: 'null' }] }
+      responses:
+        '200':
+          description: 'OK.'
+          content: { application/json: { schema: { $ref: '#/components/schemas/Issue' } } }
+          headers: { ETag: { $ref: '#/components/headers/ETag' } }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/StaleResource' }
+  /issues/{issueId}/transitions:
+    parameters: [{ $ref: '#/components/parameters/IssueIdPath' }]
+    post:
+      tags: [Issues]
+      operationId: transitionIssue
+      summary: 'Lifecycle transition (MOD-10/MOD-11) — verified_resolved is rejected here (MOD-13: system-only)'
+      parameters: [{ $ref: '#/components/parameters/IfMatch' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/IssueTransitionRequest' }
+      responses:
+        '200':
+          {
+            description: 'OK.',
+            content: { application/json: { schema: { $ref: '#/components/schemas/Issue' } } },
+          }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/StaleResource' }
+        '422':
+          description: e.g. attempting `verified_resolved` manually, or `false_positive` without a reason code.
+          content:
+            {
+              application/problem+json: { schema: { $ref: '#/components/schemas/ProblemDetails' } },
+            }
+  /issues/{issueId}/history:
+    parameters: [{ $ref: '#/components/parameters/IssueIdPath' }]
+    get:
+      tags: [Issues]
+      operationId: listIssueHistory
+      summary: Lifecycle state history for an issue
+      parameters:
+        [{ $ref: '#/components/parameters/Cursor' }, { $ref: '#/components/parameters/Limit' }]
+      responses:
+        '200':
+          description: 'OK.'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, nextCursor]
+                properties:
+                  items:
+                    { type: array, items: { $ref: '#/components/schemas/IssueStateHistoryEntry' } }
+                  nextCursor: { oneOf: [{ type: string }, { type: 'null' }] }
+  /issues/{issueId}/risk-score-history:
+    parameters: [{ $ref: '#/components/parameters/IssueIdPath' }]
+    get:
+      tags: [Issues]
+      operationId: listIssueRiskScoreHistory
+      summary: Every risk-score snapshot for this issue (MOD-18) — reproducible against the policy version each was computed under
+      responses:
+        '200':
+          description: 'OK.'
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/RiskScoreSnapshot' } }
+  /issues/{issueId}/verification-scans:
+    parameters: [{ $ref: '#/components/parameters/IssueIdPath' }]
+    get:
+      tags: [Issues]
+      operationId: listIssueVerificationScans
+      summary: Verification scans for an issue
+      responses:
+        '200':
+          description: 'OK.'
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/VerificationScan' } }
+  /issues/bulk-transitions:
+    post:
+      tags: [Issues]
+      operationId: bulkTransitionIssues
+      summary: Bulk triage (P1-11)
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [issueIds, transition]
+              properties:
+                issueIds: { type: array, items: { type: string }, minItems: 1, maxItems: 500 }
+                transition: { $ref: '#/components/schemas/IssueTransitionRequest' }
+      responses:
+        '200':
+          description: Per-issue outcome — a partial failure (e.g. one issue's ETag was stale) never blocks the rest.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [results]
+                properties:
+                  results:
+                    type: array
+                    items:
+                      type: object
+                      required: [issueId, outcome]
+                      properties:
+                        issueId: { type: string }
+                        outcome: { type: string, enum: [applied, failed] }
+                        problem: { $ref: '#/components/schemas/ProblemDetails' }
+
+  # ------------------------------------------------------------ SavedViews
+  /saved-views:
+    get:
+      tags: [SavedViews]
+      operationId: listSavedViews
+      summary: List saved views
+      responses:
+        '200':
+          description: 'OK.'
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/SavedView' } }
+    post:
+      tags: [SavedViews]
+      operationId: createSavedView
+      summary: Create a saved view
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/SavedViewCreate' } } }
+      responses:
+        '201':
+          {
+            description: 'Created.',
+            content: { application/json: { schema: { $ref: '#/components/schemas/SavedView' } } },
+          }
+        '400': { $ref: '#/components/responses/ValidationError' }
+  /saved-views/{viewId}:
+    parameters:
+      - name: viewId
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [SavedViews]
+      operationId: getSavedView
+      summary: Get a saved view
+      responses:
+        '200':
+          {
+            description: 'OK.',
+            content: { application/json: { schema: { $ref: '#/components/schemas/SavedView' } } },
+          }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [SavedViews]
+      operationId: updateSavedView
+      summary: Update a saved view
+      parameters: [{ $ref: '#/components/parameters/IfMatch' }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/SavedViewCreate' } } }
+      responses:
+        '200':
+          {
+            description: 'OK.',
+            content: { application/json: { schema: { $ref: '#/components/schemas/SavedView' } } },
+          }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/StaleResource' }
+    delete:
+      tags: [SavedViews]
+      operationId: deleteSavedView
+      summary: Delete a saved view
+      responses:
+        '204': { description: Deleted. }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # ------------------------------------------------------------- Exceptions
+  /exceptions:
+    get:
+      tags: [Exceptions]
+      operationId: listExceptions
+      summary: Exceptions register (MOD-12)
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+        - name: status
+          in: query
+          schema: { $ref: '#/components/schemas/ExceptionStatus' }
+      responses:
+        '200':
+          description: 'OK.'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, nextCursor]
+                properties:
+                  items: { type: array, items: { $ref: '#/components/schemas/Exception' } }
+                  nextCursor: { oneOf: [{ type: string }, { type: 'null' }] }
+    post:
+      tags: [Exceptions]
+      operationId: createException
+      summary: Request an exception (risk_accepted) for an issue
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [issueId, justification, expiresAt]
+              properties:
+                issueId: { type: string }
+                justification: { type: string, minLength: 1 }
+                expiresAt:
+                  type: string
+                  format: date-time
+                  description: MOD-12 — must be within 365 days of the request (GATE 1-accepted maximum).
+      responses:
+        '201':
+          {
+            description: 'Created.',
+            content: { application/json: { schema: { $ref: '#/components/schemas/Exception' } } },
+          }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '422':
+          description: expiresAt exceeds the documented maximum.
+          content:
+            {
+              application/problem+json: { schema: { $ref: '#/components/schemas/ProblemDetails' } },
+            }
+  /exceptions/{exceptionId}:
+    parameters:
+      - name: exceptionId
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [Exceptions]
+      operationId: getException
+      summary: Get an exception
+      responses:
+        '200':
+          {
+            description: 'OK.',
+            content: { application/json: { schema: { $ref: '#/components/schemas/Exception' } } },
+          }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /exceptions/{exceptionId}/approve:
+    parameters:
+      - name: exceptionId
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      tags: [Exceptions]
+      operationId: approveException
+      summary: Approve — approver must differ from requester (MOD-12)
+      responses:
+        '200':
+          {
+            description: 'OK.',
+            content: { application/json: { schema: { $ref: '#/components/schemas/Exception' } } },
+          }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422':
+          description: Approver is the same user as the requester.
+          content:
+            {
+              application/problem+json: { schema: { $ref: '#/components/schemas/ProblemDetails' } },
+            }
+  /exceptions/{exceptionId}/reject:
+    parameters:
+      - name: exceptionId
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      tags: [Exceptions]
+      operationId: rejectException
+      summary: Reject an exception request
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties: { reason: { type: string } }
+      responses:
+        '200':
+          {
+            description: 'OK.',
+            content: { application/json: { schema: { $ref: '#/components/schemas/Exception' } } },
+          }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /exceptions/{exceptionId}/revoke:
+    parameters:
+      - name: exceptionId
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      tags: [Exceptions]
+      operationId: revokeException
+      summary: Revoke an approved exception early — reopens the issue
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties: { reason: { type: string } }
+      responses:
+        '200':
+          {
+            description: 'OK.',
+            content: { application/json: { schema: { $ref: '#/components/schemas/Exception' } } },
+          }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # ------------------------------------------------------------- RiskScoring
+  /risk-scoring-policies:
+    get:
+      tags: [RiskScoring]
+      operationId: listRiskScoringPolicies
+      summary: Policy version history (MOD-18)
+      responses:
+        '200':
+          description: 'OK.'
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/RiskScoringPolicy' } }
+    post:
+      tags: [RiskScoring]
+      operationId: createRiskScoringPolicy
+      summary: Publish new weights as a new version (MOD-18); triggers background recomputation of every open issue
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RiskScoringWeights' }
+      responses:
+        '201':
+          description: 'Created.'
+          content:
+            { application/json: { schema: { $ref: '#/components/schemas/RiskScoringPolicy' } } }
+          headers:
+            Location:
+              {
+                schema: { type: string },
+                description: 'Points at /risk-scoring-policies/{version}/recompute-status',
+              }
+        '400': { $ref: '#/components/responses/ValidationError' }
+  /risk-scoring-policies/active:
+    get:
+      tags: [RiskScoring]
+      operationId: getActiveRiskScoringPolicy
+      summary: Get the active risk-scoring policy
+      responses:
+        '200':
+          {
+            description: 'OK.',
+            content:
+              { application/json: { schema: { $ref: '#/components/schemas/RiskScoringPolicy' } } },
+          }
+  /risk-scoring-policies/{version}/recompute-status:
+    parameters:
+      - name: version
+        in: path
+        required: true
+        schema: { type: integer }
+    get:
+      tags: [RiskScoring]
+      operationId: getRiskScoringRecomputeStatus
+      summary: Poll recomputation progress after a weight change (MOD-18)
+      responses:
+        '200':
+          description: 'OK.'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, issuesTotal, issuesRecomputed]
+                properties:
+                  status: { type: string, enum: [in_progress, completed] }
+                  issuesTotal: { type: integer }
+                  issuesRecomputed: { type: integer }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # -------------------------------------------------------------- SlaPolicies
+  /sla-policies:
+    get:
+      tags: [SlaPolicies]
+      operationId: listSlaPolicies
+      summary: Active SLA policy matrix (MOD-14) — risk band x asset criticality -> due-within days
+      responses:
+        '200':
+          description: 'OK.'
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/SlaPolicy' } }
+    post:
+      tags: [SlaPolicies]
+      operationId: createSlaPolicyMatrix
+      summary: Publish a new matrix as a new version
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: array
+              items: { $ref: '#/components/schemas/SlaPolicyRow' }
+      responses:
+        '201':
+          description: 'Created.'
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/SlaPolicy' } }
+        '400': { $ref: '#/components/responses/ValidationError' }
+
+  # ------------------------------------------------------------------ Scopes
+  /authorized-scopes:
+    get:
+      tags: [Scopes]
+      operationId: listAuthorizedScopes
+      summary: List authorized scopes
+      parameters:
+        [{ $ref: '#/components/parameters/Cursor' }, { $ref: '#/components/parameters/Limit' }]
+      responses:
+        '200':
+          description: 'OK.'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, nextCursor]
+                properties:
+                  items: { type: array, items: { $ref: '#/components/schemas/AuthorizedScope' } }
+                  nextCursor: { oneOf: [{ type: string }, { type: 'null' }] }
+    post:
+      tags: [Scopes]
+      operationId: createAuthorizedScope
+      summary: Declare an authorized scope (SAFE-01). Immutable once accepted.
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: true
+        content:
+          { application/json: { schema: { $ref: '#/components/schemas/AuthorizedScopeCreate' } } }
+      responses:
+        '201':
+          {
+            description: 'Created.',
+            content:
+              { application/json: { schema: { $ref: '#/components/schemas/AuthorizedScope' } } },
+          }
+        '400': { $ref: '#/components/responses/ValidationError' }
+  /authorized-scopes/{scopeId}:
+    parameters:
+      - name: scopeId
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [Scopes]
+      operationId: getAuthorizedScope
+      summary: Get an authorized scope
+      responses:
+        '200':
+          {
+            description: 'OK.',
+            content:
+              { application/json: { schema: { $ref: '#/components/schemas/AuthorizedScope' } } },
+          }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /authorized-scopes/{scopeId}/supersede:
+    parameters:
+      - name: scopeId
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      tags: [Scopes]
+      operationId: supersedeAuthorizedScope
+      summary: >-
+        SAFE-01: scopes are immutable once accepted, so "editing" one means
+        declaring a brand-new scope (its own fresh attestation) that
+        supersedes this one. The old record's fields never change — only its
+        supersededById link is set, exactly once.
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: true
+        content:
+          { application/json: { schema: { $ref: '#/components/schemas/AuthorizedScopeCreate' } } }
+      responses:
+        '201':
+          {
+            description: 'Created — the new, superseding scope.',
+            content:
+              { application/json: { schema: { $ref: '#/components/schemas/AuthorizedScope' } } },
+          }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: This scope has already been superseded by a later declaration.
+          content:
+            { application/problem+json: { schema: { $ref: '#/components/schemas/ProblemDetails' } } }
+
+  # ------------------------------------------------------------ ExclusionRules
+  /exclusion-rules:
+    get:
+      tags: [ExclusionRules]
+      operationId: listExclusionRules
+      summary: List exclusion rules
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+        - name: scopeId
+          in: query
+          schema: { type: string }
+      responses:
+        '200':
+          description: 'OK.'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, nextCursor]
+                properties:
+                  items: { type: array, items: { $ref: '#/components/schemas/ExclusionRule' } }
+                  nextCursor: { oneOf: [{ type: string }, { type: 'null' }] }
+    post:
+      tags: [ExclusionRules]
+      operationId: createExclusionRule
+      summary: SAFE-02 — enforced at plan validation and again in the worker before dispatch
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: true
+        content:
+          { application/json: { schema: { $ref: '#/components/schemas/ExclusionRuleCreate' } } }
+      responses:
+        '201':
+          {
+            description: 'Created.',
+            content:
+              { application/json: { schema: { $ref: '#/components/schemas/ExclusionRule' } } },
+          }
+        '400': { $ref: '#/components/responses/ValidationError' }
+  /exclusion-rules/{ruleId}:
+    parameters:
+      - name: ruleId
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [ExclusionRules]
+      operationId: getExclusionRule
+      summary: Get an exclusion rule (its ETag is required before PATCH — the list endpoint carries no per-item ETag)
+      responses:
+        '200':
+          {
+            description: 'OK.',
+            content:
+              { application/json: { schema: { $ref: '#/components/schemas/ExclusionRule' } } },
+          }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [ExclusionRules]
+      operationId: updateExclusionRule
+      summary: Deactivate a rule
+      parameters: [{ $ref: '#/components/parameters/IfMatch' }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties: { isActive: { type: boolean } }
+      responses:
+        '200':
+          {
+            description: 'OK.',
+            content:
+              { application/json: { schema: { $ref: '#/components/schemas/ExclusionRule' } } },
+          }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/StaleResource' }
+
+  # ------------------------------------------------------------- ScanProfiles
+  /scan-profiles:
+    get:
+      tags: [ScanProfiles]
+      operationId: listScanProfiles
+      summary: List scan profiles
+      responses:
+        '200':
+          description: 'OK.'
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/ScanProfile' } }
+    post:
+      tags: [ScanProfiles]
+      operationId: createScanProfile
+      summary: Create a scan profile
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: true
+        content:
+          { application/json: { schema: { $ref: '#/components/schemas/ScanProfileCreate' } } }
+      responses:
+        '201':
+          {
+            description: 'Created.',
+            content: { application/json: { schema: { $ref: '#/components/schemas/ScanProfile' } } },
+          }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '422':
+          description: Pacing config requests a value above the pacing ceilings (SAFE-04).
+          content:
+            {
+              application/problem+json: { schema: { $ref: '#/components/schemas/ProblemDetails' } },
+            }
+  /scan-profiles/{profileId}:
+    parameters:
+      - name: profileId
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [ScanProfiles]
+      operationId: getScanProfile
+      summary: Get a scan profile
+      responses:
+        '200':
+          {
+            description: 'OK.',
+            content: { application/json: { schema: { $ref: '#/components/schemas/ScanProfile' } } },
+          }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [ScanProfiles]
+      operationId: updateScanProfile
+      summary: Update a scan profile
+      parameters: [{ $ref: '#/components/parameters/IfMatch' }]
+      requestBody:
+        required: true
+        content:
+          { application/json: { schema: { $ref: '#/components/schemas/ScanProfileCreate' } } }
+      responses:
+        '200':
+          {
+            description: 'OK.',
+            content: { application/json: { schema: { $ref: '#/components/schemas/ScanProfile' } } },
+          }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/StaleResource' }
+        '422':
+          description: Pacing config requests a value above the pacing ceilings (SAFE-04).
+          content:
+            {
+              application/problem+json: { schema: { $ref: '#/components/schemas/ProblemDetails' } },
+            }
+
+  # ----------------------------------------------------------- PacingCeilings
+  /pacing-ceilings:
+    get:
+      tags: [PacingCeilings]
+      operationId: getPacingCeilings
+      summary: System-wide hard ceilings (SAFE-04) — no profile may configure above these
+      responses:
+        '200':
+          {
+            description: 'OK.',
+            content:
+              { application/json: { schema: { $ref: '#/components/schemas/PacingCeilings' } } },
+          }
+    patch:
+      tags: [PacingCeilings]
+      operationId: updatePacingCeilings
+      summary: Update the system-wide pacing ceilings
+      parameters: [{ $ref: '#/components/parameters/IfMatch' }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/PacingCeilings' } } }
+      responses:
+        '200':
+          {
+            description: 'OK.',
+            content:
+              { application/json: { schema: { $ref: '#/components/schemas/PacingCeilings' } } },
+          }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/StaleResource' }
+
+  # ------------------------------------------------------- FragileDeviceRules
+  /fragile-device-rules:
+    get:
+      tags: [FragileDeviceRules]
+      operationId: listFragileDeviceRules
+      summary: Bundled heuristics for device classes known to fail under scanning (SAFE-05)
+      responses:
+        '200':
+          description: 'OK.'
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/FragileDeviceRule' } }
+  /fragile-device-rules/{ruleId}:
+    parameters:
+      - name: ruleId
+        in: path
+        required: true
+        schema: { type: string }
+    patch:
+      tags: [FragileDeviceRules]
+      operationId: updateFragileDeviceRule
+      summary: Enable/disable a bundled rule (administrator only) — rules themselves are shipped, not authored
+      parameters: [{ $ref: '#/components/parameters/IfMatch' }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [isEnabled]
+              properties: { isEnabled: { type: boolean } }
+      responses:
+        '200':
+          {
+            description: 'OK.',
+            content:
+              { application/json: { schema: { $ref: '#/components/schemas/FragileDeviceRule' } } },
+          }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/StaleResource' }
+
+  # ---------------------------------------------------------- BlackoutWindows
+  /blackout-windows:
+    get:
+      tags: [BlackoutWindows]
+      operationId: listBlackoutWindows
+      summary: List blackout windows
+      parameters:
+        - name: scopeId
+          in: query
+          schema: { type: string }
+      responses:
+        '200':
+          description: 'OK.'
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/BlackoutWindow' } }
+    post:
+      tags: [BlackoutWindows]
+      operationId: createBlackoutWindow
+      summary: Create a blackout window
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: true
+        content:
+          { application/json: { schema: { $ref: '#/components/schemas/BlackoutWindowCreate' } } }
+      responses:
+        '201':
+          {
+            description: 'Created.',
+            content:
+              { application/json: { schema: { $ref: '#/components/schemas/BlackoutWindow' } } },
+          }
+        '400': { $ref: '#/components/responses/ValidationError' }
+  /blackout-windows/{windowId}:
+    parameters:
+      - name: windowId
+        in: path
+        required: true
+        schema: { type: string }
+    patch:
+      tags: [BlackoutWindows]
+      operationId: updateBlackoutWindow
+      summary: Update a blackout window
+      parameters: [{ $ref: '#/components/parameters/IfMatch' }]
+      requestBody:
+        required: true
+        content:
+          { application/json: { schema: { $ref: '#/components/schemas/BlackoutWindowCreate' } } }
+      responses:
+        '200':
+          {
+            description: 'OK.',
+            content:
+              { application/json: { schema: { $ref: '#/components/schemas/BlackoutWindow' } } },
+          }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/StaleResource' }
+    delete:
+      tags: [BlackoutWindows]
+      operationId: deleteBlackoutWindow
+      summary: Delete a blackout window
+      responses:
+        '204': { description: Deleted. }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # ----------------------------------------------------------- ScanSchedules
+  /scan-schedules:
+    get:
+      tags: [ScanSchedules]
+      operationId: listScanSchedules
+      summary: List scan schedules
+      parameters:
+        [{ $ref: '#/components/parameters/Cursor' }, { $ref: '#/components/parameters/Limit' }]
+      responses:
+        '200':
+          description: 'OK.'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, nextCursor]
+                properties:
+                  items: { type: array, items: { $ref: '#/components/schemas/ScanSchedule' } }
+                  nextCursor: { oneOf: [{ type: string }, { type: 'null' }] }
+    post:
+      tags: [ScanSchedules]
+      operationId: createScanSchedule
+      summary: Create a scan schedule
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: true
+        content:
+          { application/json: { schema: { $ref: '#/components/schemas/ScanScheduleCreate' } } }
+      responses:
+        '201':
+          {
+            description: 'Created.',
+            content:
+              { application/json: { schema: { $ref: '#/components/schemas/ScanSchedule' } } },
+          }
+        '400': { $ref: '#/components/responses/ValidationError' }
+  /scan-schedules/{scheduleId}:
+    parameters:
+      - name: scheduleId
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [ScanSchedules]
+      operationId: getScanSchedule
+      summary: Get a scan schedule
+      responses:
+        '200':
+          {
+            description: 'OK.',
+            content:
+              { application/json: { schema: { $ref: '#/components/schemas/ScanSchedule' } } },
+          }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [ScanSchedules]
+      operationId: updateScanSchedule
+      summary: Update a scan schedule
+      parameters: [{ $ref: '#/components/parameters/IfMatch' }]
+      requestBody:
+        required: true
+        content:
+          { application/json: { schema: { $ref: '#/components/schemas/ScanScheduleCreate' } } }
+      responses:
+        '200':
+          {
+            description: 'OK.',
+            content:
+              { application/json: { schema: { $ref: '#/components/schemas/ScanSchedule' } } },
+          }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/StaleResource' }
+    delete:
+      tags: [ScanSchedules]
+      operationId: deleteScanSchedule
+      summary: Delete a scan schedule
+      responses:
+        '204': { description: Deleted. }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # ------------------------------------------------------------------- Scans
+  /scan-plans:
+    post:
+      tags: [Scans]
+      operationId: createScanPlan
+      summary: SAFE-08 pre-flight plan — target count, packet volume, duration, exclusions, fragile downgrades
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [scopeId, profileId]
+              properties:
+                scopeId: { type: string }
+                profileId: { type: string }
+      responses:
+        '201':
+          {
+            description: 'Created.',
+            content:
+              { application/json: { schema: { $ref: '#/components/schemas/ScanPlanPreview' } } },
+          }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '422':
+          description: Scope has no in-bounds targets after exclusions, or profile requires confirmation not yet given (SAFE-03 `standard`).
+          content:
+            {
+              application/problem+json: { schema: { $ref: '#/components/schemas/ProblemDetails' } },
+            }
+  /scan-runs:
+    get:
+      tags: [Scans]
+      operationId: listScanRuns
+      summary: Scan run history (P1-10)
+      parameters:
+        [{ $ref: '#/components/parameters/Cursor' }, { $ref: '#/components/parameters/Limit' }]
+      responses:
+        '200': { $ref: '#/components/responses/ScanRunListPage' }
+    post:
+      tags: [Scans]
+      operationId: createScanRun
+      summary: Confirm a plan preview and create the scan run (SAFE-08). Never blocks on execution (ADR 0006).
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [planPreviewId, confirm]
+              properties:
+                planPreviewId: { type: string }
+                confirm: { type: boolean, enum: [true] }
+                standardProfileConfirmationText:
+                  type: string
+                  description: Required verbatim typed confirmation when the profile's intrusiveness is `standard` (SAFE-03).
+      responses:
+        '202':
+          description: Queued. Poll the Location URL for status.
+          headers:
+            Location: { schema: { type: string } }
+          content: { application/json: { schema: { $ref: '#/components/schemas/ScanRun' } } }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '410':
+          description: Plan preview expired or was already confirmed.
+          content:
+            {
+              application/problem+json: { schema: { $ref: '#/components/schemas/ProblemDetails' } },
+            }
+  /scan-runs/{scanRunId}:
+    parameters: [{ $ref: '#/components/parameters/ScanRunIdPath' }]
+    get:
+      tags: [Scans]
+      operationId: getScanRun
+      summary: Live run view — per-target progress (P1-10)
+      responses:
+        '200':
+          {
+            description: 'OK.',
+            content: { application/json: { schema: { $ref: '#/components/schemas/ScanRun' } } },
+          }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /scan-runs/{scanRunId}/targets:
+    parameters: [{ $ref: '#/components/parameters/ScanRunIdPath' }]
+    get:
+      tags: [Scans]
+      operationId: listScanRunTargets
+      summary: Per-target status for a scan run
+      parameters:
+        [{ $ref: '#/components/parameters/Cursor' }, { $ref: '#/components/parameters/Limit' }]
+      responses:
+        '200':
+          description: 'OK.'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, nextCursor]
+                properties:
+                  items: { type: array, items: { $ref: '#/components/schemas/ScanRunTarget' } }
+                  nextCursor: { oneOf: [{ type: string }, { type: 'null' }] }
+  /scan-runs/{scanRunId}/raw-artifacts:
+    parameters: [{ $ref: '#/components/parameters/ScanRunIdPath' }]
+    get:
+      tags: [Scans]
+      operationId: listScanRunRawArtifacts
+      summary: Raw artifacts produced by this run, for download (run detail per P1-10)
+      responses:
+        '200':
+          description: 'OK.'
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/RawArtifact' } }
+  /scan-runs/{scanRunId}/pause:
+    parameters: [{ $ref: '#/components/parameters/ScanRunIdPath' }]
+    post:
+      tags: [Scans]
+      operationId: pauseScanRun
+      summary: Pause between hosts (also happens automatically entering a blackout window, SAFE-06)
+      responses:
+        '200':
+          {
+            description: 'OK.',
+            content: { application/json: { schema: { $ref: '#/components/schemas/ScanRun' } } },
+          }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /scan-runs/{scanRunId}/resume:
+    parameters: [{ $ref: '#/components/parameters/ScanRunIdPath' }]
+    post:
+      tags: [Scans]
+      operationId: resumeScanRun
+      summary: Resume a paused scan run
+      responses:
+        '200':
+          {
+            description: 'OK.',
+            content: { application/json: { schema: { $ref: '#/components/schemas/ScanRun' } } },
+          }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /scan-runs/{scanRunId}/abort:
+    parameters: [{ $ref: '#/components/parameters/ScanRunIdPath' }]
+    post:
+      tags: [Scans]
+      operationId: abortScanRun
+      summary: Abort a scan run
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties: { reason: { type: string } }
+      responses:
+        '200':
+          {
+            description: 'OK.',
+            content: { application/json: { schema: { $ref: '#/components/schemas/ScanRun' } } },
+          }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  # --------------------------------------------------------- VerificationScans
+  /verification-scans:
+    post:
+      tags: [VerificationScans]
+      operationId: createVerificationScan
+      summary: Narrowly scoped re-check of a specific issue (4.6) — the product's substitute for remediation
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [issueId]
+              properties: { issueId: { type: string } }
+      responses:
+        '202':
+          description: 'Accepted.'
+          headers: { Location: { schema: { type: string } } }
+          content:
+            { application/json: { schema: { $ref: '#/components/schemas/VerificationScan' } } }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /verification-scans/{verificationScanId}:
+    parameters:
+      - name: verificationScanId
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [VerificationScans]
+      operationId: getVerificationScan
+      summary: Get a verification scan
+      responses:
+        '200':
+          {
+            description: 'OK.',
+            content:
+              { application/json: { schema: { $ref: '#/components/schemas/VerificationScan' } } },
+          }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # --------------------------------------------------------------- GlobalStop
+  /global-stop:
+    post:
+      tags: [GlobalStop]
+      operationId: invokeGlobalStop
+      summary: SAFE-07 — halt all queued and running scan activity. Reachable from every screen; CLI equivalent documented in runbooks.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties: { reason: { type: string } }
+      responses:
+        '200':
+          {
+            description: 'OK.',
+            content:
+              { application/json: { schema: { $ref: '#/components/schemas/GlobalStopEvent' } } },
+          }
+  /global-stop/history:
+    get:
+      tags: [GlobalStop]
+      operationId: listGlobalStopHistory
+      summary: Global stop invocation history
+      parameters:
+        [{ $ref: '#/components/parameters/Cursor' }, { $ref: '#/components/parameters/Limit' }]
+      responses:
+        '200':
+          description: 'OK.'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, nextCursor]
+                properties:
+                  items: { type: array, items: { $ref: '#/components/schemas/GlobalStopEvent' } }
+                  nextCursor: { oneOf: [{ type: string }, { type: 'null' }] }
+
+  # ----------------------------------------------------------- ScannerAdapters
+  /scanner-adapters:
+    get:
+      tags: [ScannerAdapters]
+      operationId: listScannerAdapters
+      summary: Registered adapters and their declared fidelity (MOD-19 corroboration input)
+      responses:
+        '200':
+          description: 'OK.'
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/ScannerAdapter' } }
+
+  # ------------------------------------------------------------------- Reports
+  /reports:
+    get:
+      tags: [Reports]
+      operationId: listReports
+      summary: List reports
+      parameters:
+        [{ $ref: '#/components/parameters/Cursor' }, { $ref: '#/components/parameters/Limit' }]
+      responses:
+        '200':
+          description: 'OK.'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, nextCursor]
+                properties:
+                  items: { type: array, items: { $ref: '#/components/schemas/Report' } }
+                  nextCursor: { oneOf: [{ type: string }, { type: 'null' }] }
+    post:
+      tags: [Reports]
+      operationId: createReport
+      summary: Generate a report (4.8) — executive summary, technical detail, or delta
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ReportCreate' }
+      responses:
+        '202':
+          description: 'Accepted.'
+          headers: { Location: { schema: { type: string } } }
+          content: { application/json: { schema: { $ref: '#/components/schemas/Report' } } }
+        '400': { $ref: '#/components/responses/ValidationError' }
+  /reports/{reportId}:
+    parameters:
+      - name: reportId
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [Reports]
+      operationId: getReport
+      summary: Get a report
+      responses:
+        '200':
+          {
+            description: 'OK.',
+            content: { application/json: { schema: { $ref: '#/components/schemas/Report' } } },
+          }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /reports/{reportId}/download:
+    parameters:
+      - name: reportId
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [Reports]
+      operationId: downloadReport
+      summary: Download a completed report
+      parameters:
+        - name: format
+          in: query
+          required: true
+          schema: { type: string, enum: [html, csv, json] }
+      responses:
+        '200':
+          description: Report artifact.
+          content:
+            text/html: { schema: { type: string } }
+            text/csv: { schema: { type: string } }
+            application/json: { schema: { type: object } }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: Report generation not yet complete.
+          content:
+            {
+              application/problem+json: { schema: { $ref: '#/components/schemas/ProblemDetails' } },
+            }
+
+  # -------------------------------------------------------------- Notifications
+  /notification-channels:
+    get:
+      tags: [Notifications]
+      operationId: listNotificationChannels
+      summary: List notification channels
+      responses:
+        '200':
+          description: 'OK.'
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/NotificationChannel' } }
+    post:
+      tags: [Notifications]
+      operationId: createNotificationChannel
+      summary: Create a notification channel
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: true
+        content:
+          {
+            application/json:
+              { schema: { $ref: '#/components/schemas/NotificationChannelCreate' } },
+          }
+      responses:
+        '201':
+          {
+            description: 'Created.',
+            content:
+              {
+                application/json: { schema: { $ref: '#/components/schemas/NotificationChannel' } },
+              },
+          }
+        '400': { $ref: '#/components/responses/ValidationError' }
+  /notification-channels/{channelId}:
+    parameters:
+      - name: channelId
+        in: path
+        required: true
+        schema: { type: string }
+    patch:
+      tags: [Notifications]
+      operationId: updateNotificationChannel
+      summary: Update a notification channel
+      parameters: [{ $ref: '#/components/parameters/IfMatch' }]
+      requestBody:
+        required: true
+        content:
+          {
+            application/json:
+              { schema: { $ref: '#/components/schemas/NotificationChannelCreate' } },
+          }
+      responses:
+        '200':
+          {
+            description: 'OK.',
+            content:
+              {
+                application/json: { schema: { $ref: '#/components/schemas/NotificationChannel' } },
+              },
+          }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/StaleResource' }
+    delete:
+      tags: [Notifications]
+      operationId: deleteNotificationChannel
+      summary: Delete a notification channel
+      responses:
+        '204': { description: Deleted. }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /notification-events:
+    get:
+      tags: [Notifications]
+      operationId: listNotificationEvents
+      summary: Delivery history/log
+      parameters:
+        [{ $ref: '#/components/parameters/Cursor' }, { $ref: '#/components/parameters/Limit' }]
+      responses:
+        '200':
+          description: 'OK.'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, nextCursor]
+                properties:
+                  items: { type: array, items: { $ref: '#/components/schemas/NotificationEvent' } }
+                  nextCursor: { oneOf: [{ type: string }, { type: 'null' }] }
+
+  # ------------------------------------------------------------------- Audit
+  /audit-entries:
+    get:
+      tags: [Audit]
+      operationId: listAuditEntries
+      summary: List audit entries
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+        - name: actorUserId
+          in: query
+          schema: { type: string }
+        - name: targetType
+          in: query
+          schema: { type: string }
+        - name: from
+          in: query
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          schema: { type: string, format: date-time }
+      responses:
+        '200':
+          description: 'OK.'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, nextCursor]
+                properties:
+                  items: { type: array, items: { $ref: '#/components/schemas/AuditEntry' } }
+                  nextCursor: { oneOf: [{ type: string }, { type: 'null' }] }
+  /audit-entries/export:
+    get:
+      tags: [Audit]
+      operationId: exportAuditEntries
+      summary: Export audit entries as CSV
+      parameters:
+        - name: from
+          in: query
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          schema: { type: string, format: date-time }
+      responses:
+        '200':
+          description: 'OK.'
+          content: { text/csv: { schema: { type: string } } }
+  /audit-chain/verify:
+    get:
+      tags: [Audit]
+      operationId: verifyAuditChain
+      summary: DATA-02 — walks the chain, recomputes hashes, reports gaps and mismatches
+      responses:
+        '200':
+          {
+            description: 'OK.',
+            content:
+              {
+                application/json:
+                  { schema: { $ref: '#/components/schemas/AuditChainVerificationResult' } },
+              },
+          }
+
+  # ---------------------------------------------------------------- Retention
+  /retention-policies:
+    get:
+      tags: [Retention]
+      operationId: listRetentionPolicies
+      summary: List retention policies
+      responses:
+        '200':
+          description: 'OK.'
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/RetentionPolicy' } }
+  /retention-policies/{dataClass}:
+    parameters:
+      - name: dataClass
+        in: path
+        required: true
+        schema: { $ref: '#/components/schemas/RetentionDataClass' }
+    get:
+      tags: [Retention]
+      operationId: getRetentionPolicy
+      summary: Get a single retention policy, with its current ETag for the subsequent PATCH's If-Match (ADR 0006)
+      responses:
+        '200':
+          description: 'OK.'
+          content:
+            { application/json: { schema: { $ref: '#/components/schemas/RetentionPolicy' } } }
+          headers: { ETag: { $ref: '#/components/headers/ETag' } }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [Retention]
+      operationId: updateRetentionPolicy
+      summary: Configure retention days. The UI will not allow going below minimumFloorDays (DATA-04).
+      parameters: [{ $ref: '#/components/parameters/IfMatch' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [retentionDays]
+              properties: { retentionDays: { type: integer, minimum: 1 } }
+      responses:
+        '200':
+          description: 'OK.'
+          content:
+            { application/json: { schema: { $ref: '#/components/schemas/RetentionPolicy' } } }
+          headers: { ETag: { $ref: '#/components/headers/ETag' } }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/StaleResource' }
+        '422':
+          description: retentionDays below minimumFloorDays.
+          content:
+            {
+              application/problem+json: { schema: { $ref: '#/components/schemas/ProblemDetails' } },
+            }
+
+  # ------------------------------------------------------------------ Backup
+  /backup-records:
+    get:
+      tags: [Backup]
+      operationId: listBackupRecords
+      summary: List backup records
+      parameters:
+        [{ $ref: '#/components/parameters/Cursor' }, { $ref: '#/components/parameters/Limit' }]
+      responses:
+        '200':
+          description: 'OK.'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, nextCursor]
+                properties:
+                  items: { type: array, items: { $ref: '#/components/schemas/BackupRecord' } }
+                  nextCursor: { oneOf: [{ type: string }, { type: 'null' }] }
+  /backup-records/{backupId}:
+    parameters:
+      - name: backupId
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [Backup]
+      operationId: getBackupRecord
+      summary: Get a backup record
+      responses:
+        '200':
+          {
+            description: 'OK.',
+            content:
+              { application/json: { schema: { $ref: '#/components/schemas/BackupRecord' } } },
+          }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /backups:
+    post:
+      tags: [Backup]
+      operationId: createBackup
+      summary: Trigger an on-demand backup (DATA-05)
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      responses:
+        '202':
+          description: 'Accepted.'
+          headers: { Location: { schema: { type: string } } }
+          content: { application/json: { schema: { $ref: '#/components/schemas/BackupRecord' } } }
+
+  # ---------------------------------------------------------- Intelligence
+  # docs/cve-intel-feature-spec.md. NVD 2.0 is the live, verified source
+  # (FEED-08.1); EPSS bulk (FEED-08.3) is fetched alongside it for exploit
+  # probability. CISA KEV direct fetch (FEED-08.2) is not implemented —
+  # NVD's own cisaExploitAdd annotation is used as the known-exploited
+  # signal for now (see apps/worker/src/pipeline/process-intel-import.ts).
+  /intel/status:
+    get:
+      tags: [Intelligence]
+      operationId: getIntelStatus
+      summary: UI-103 — active corpus version, record counts, and staleness
+      responses:
+        '200':
+          {
+            description: 'OK.',
+            content: { application/json: { schema: { $ref: '#/components/schemas/IntelStatus' } } },
+          }
+  /intel/imports:
+    get:
+      tags: [Intelligence]
+      operationId: listIntelImports
+      summary: UI-106 — sync history
+      parameters:
+        [{ $ref: '#/components/parameters/Cursor' }, { $ref: '#/components/parameters/Limit' }]
+      responses:
+        '200':
+          description: 'OK.'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, nextCursor]
+                properties:
+                  items: { type: array, items: { $ref: '#/components/schemas/IntelImport' } }
+                  nextCursor: { oneOf: [{ type: string }, { type: 'null' }] }
+  /intel/sync:
+    post:
+      tags: [Intelligence]
+      operationId: createIntelSync
+      summary: 'FEED-11 — "Update now": a bounded incremental NVD+EPSS sync, staged then applied atomically (FEED-25)'
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                modifiedSinceDays: { type: integer, minimum: 1, maximum: 120, default: 7 }
+      responses:
+        '202':
+          {
+            description: 'Accepted — the sync runs asynchronously in apps/worker.',
+            content: { application/json: { schema: { $ref: '#/components/schemas/IntelImport' } } },
+          }
+        '409':
+          description: Online updates are permanently disabled for this deployment (FEED-23).
+          content:
+            { application/problem+json: { schema: { $ref: '#/components/schemas/ProblemDetails' } } }
+  /intel/settings:
+    get:
+      tags: [Intelligence]
+      operationId: getIntelSettings
+      summary: FEED-23 — the online-update disable switch
+      responses:
+        '200':
+          {
+            description: 'OK.',
+            content:
+              { application/json: { schema: { $ref: '#/components/schemas/IntelSettings' } } },
+          }
+    patch:
+      tags: [Intelligence]
+      operationId: updateIntelSettings
+      summary: FEED-23
+      parameters: [{ $ref: '#/components/parameters/IfMatch' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [onlineUpdatesDisabled]
+              properties: { onlineUpdatesDisabled: { type: boolean } }
+      responses:
+        '200':
+          {
+            description: 'OK.',
+            content:
+              { application/json: { schema: { $ref: '#/components/schemas/IntelSettings' } } },
+          }
+        '409': { $ref: '#/components/responses/StaleResource' }
+
+  # ------------------------------------------------------------- SystemHealth
+  /system-health:
+    get:
+      tags: [SystemHealth]
+      operationId: getSystemHealth
+      summary: OPS-04 — written for a non-engineer operator, plain-language component status
+      responses:
+        '200':
+          {
+            description: 'OK.',
+            content:
+              { application/json: { schema: { $ref: '#/components/schemas/SystemHealth' } } },
+          }
+
+  # ---------------------------------------------------------------- Dashboard
+  /dashboard:
+    get:
+      tags: [Dashboard]
+      operationId: getDashboard
+      summary: Built last, per 3.8 — every tile links to a pre-filtered view; no vanity metrics
+      responses:
+        '200':
+          {
+            description: 'OK.',
+            content:
+              { application/json: { schema: { $ref: '#/components/schemas/DashboardSummary' } } },
+          }
+
+components:
+  securitySchemes:
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: xenitex_session
+      description: >
+        Opaque server-side session (SEC-08). State-changing requests also
+        require the double-submit CSRF token in the `X-CSRF-Token` header,
+        matched against the session's csrfTokenHash server-side.
+
+  parameters:
+    Cursor:
+      name: cursor
+      in: query
+      description: Opaque cursor from a previous page's `nextCursor`. Never a raw offset (ADR 0006).
+      schema: { type: string }
+    Limit:
+      name: limit
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 500, default: 50 }
+    IfMatch:
+      name: If-Match
+      in: header
+      required: true
+      description: Current ETag of the resource. A stale value returns 409 (ADR 0006).
+      schema: { type: string }
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: Client-generated key. A retried request with the same key returns the original response rather than creating a second resource (ADR 0006).
+      schema: { type: string }
+    UserIdPath:
+      name: userId
+      in: path
+      required: true
+      schema: { type: string }
+    AssetIdPath:
+      name: assetId
+      in: path
+      required: true
+      schema: { type: string }
+    IssueIdPath:
+      name: issueId
+      in: path
+      required: true
+      schema: { type: string }
+    ScanRunIdPath:
+      name: scanRunId
+      in: path
+      required: true
+      schema: { type: string }
+
+  headers:
+    ETag:
+      description: Current entity tag; send back in `If-Match` on the next mutation.
+      schema: { type: string }
+    CorrelationId:
+      description: >-
+        OPS-01 — the correlation identifier for this request, propagated from
+        the HTTP request through any queue job and scanner invocation it
+        triggers. Echoes an inbound `X-Correlation-Id` if the client sent
+        one, otherwise server-generated. Surfaced on error responses so a UI
+        can quote it back in a support conversation (see ErrorState).
+      schema: { type: string }
+
+  responses:
+    BadRequest:
+      description: Malformed request.
+      headers: { X-Correlation-Id: { $ref: '#/components/headers/CorrelationId' } }
+      content:
+        { application/problem+json: { schema: { $ref: '#/components/schemas/ProblemDetails' } } }
+    ValidationError:
+      description: Schema validation failed at the API boundary (SEC-12) — unknown fields are rejected, not ignored.
+      headers: { X-Correlation-Id: { $ref: '#/components/headers/CorrelationId' } }
+      content:
+        { application/problem+json: { schema: { $ref: '#/components/schemas/ProblemDetails' } } }
+    Unauthorized:
+      description: Not signed in, or MFA required.
+      headers: { X-Correlation-Id: { $ref: '#/components/headers/CorrelationId' } }
+      content:
+        { application/problem+json: { schema: { $ref: '#/components/schemas/ProblemDetails' } } }
+    Forbidden:
+      description: Signed in but not authorized for this resource (SEC-13 — enforced server-side on every endpoint).
+      headers: { X-Correlation-Id: { $ref: '#/components/headers/CorrelationId' } }
+      content:
+        { application/problem+json: { schema: { $ref: '#/components/schemas/ProblemDetails' } } }
+    NotFound:
+      description: No such resource.
+      headers: { X-Correlation-Id: { $ref: '#/components/headers/CorrelationId' } }
+      content:
+        { application/problem+json: { schema: { $ref: '#/components/schemas/ProblemDetails' } } }
+    Conflict:
+      description: Request conflicts with current state.
+      headers: { X-Correlation-Id: { $ref: '#/components/headers/CorrelationId' } }
+      content:
+        { application/problem+json: { schema: { $ref: '#/components/schemas/ProblemDetails' } } }
+    StaleResource:
+      description: 'code: concurrency.stale_resource — the supplied If-Match no longer matches (ADR 0006).'
+      headers: { X-Correlation-Id: { $ref: '#/components/headers/CorrelationId' } }
+      content:
+        { application/problem+json: { schema: { $ref: '#/components/schemas/ProblemDetails' } } }
+    LockedOut:
+      description: Account locked after repeated failed attempts (SEC-11).
+      headers: { X-Correlation-Id: { $ref: '#/components/headers/CorrelationId' } }
+      content:
+        { application/problem+json: { schema: { $ref: '#/components/schemas/ProblemDetails' } } }
+    TooManyRequests:
+      description: Rate limited (SEC-11).
+      headers: { X-Correlation-Id: { $ref: '#/components/headers/CorrelationId' } }
+      content:
+        { application/problem+json: { schema: { $ref: '#/components/schemas/ProblemDetails' } } }
+    UserListPage:
+      description: Page of users.
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [items, nextCursor]
+            properties:
+              items: { type: array, items: { $ref: '#/components/schemas/User' } }
+              nextCursor: { oneOf: [{ type: string }, { type: 'null' }] }
+    AssetListPage:
+      description: Page of assets.
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [items, nextCursor]
+            properties:
+              items: { type: array, items: { $ref: '#/components/schemas/Asset' } }
+              nextCursor: { oneOf: [{ type: string }, { type: 'null' }] }
+    IssueListPage:
+      description: Page of issues.
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [items, nextCursor]
+            properties:
+              items: { type: array, items: { $ref: '#/components/schemas/Issue' } }
+              nextCursor: { oneOf: [{ type: string }, { type: 'null' }] }
+    ScanRunListPage:
+      description: Page of scan runs.
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [items, nextCursor]
+            properties:
+              items: { type: array, items: { $ref: '#/components/schemas/ScanRun' } }
+              nextCursor: { oneOf: [{ type: string }, { type: 'null' }] }
+
+  schemas:
+    ProblemDetails:
+      type: object
+      required: [type, title, status, code]
+      properties:
+        type: { type: string, format: uri }
+        title: { type: string }
+        status: { type: integer }
+        detail: { type: string }
+        instance: { type: string }
+        code:
+          type: string
+          description: Stable, machine-readable, namespaced (e.g. `scope.exclusion_violation`). Clients branch on this, never on title/detail (ADR 0006).
+
+    UserRole: { type: string, enum: [viewer, analyst, operator, administrator] }
+    AssetLifecycleState: { type: string, enum: [active, inactive, decommissioned, merged] }
+    AssetCriticality: { type: string, enum: [low, medium, high, critical] }
+    ExposureClassification: { type: string, enum: [internal, dmz, external, isolated, unknown] }
+    IdentityKeyType:
+      {
+        type: string,
+        enum: [machine_uuid, serial_number, mac_address, fqdn, certificate_fingerprint],
+      }
+    IssueState:
+      type: string
+      enum:
+        [
+          new,
+          triaged,
+          in_progress,
+          mitigated,
+          verified_resolved,
+          reopened,
+          false_positive,
+          risk_accepted,
+        ]
+    ConfidenceLabel: { type: string, enum: [low, medium, high] }
+    RiskBand:
+      {
+        type: string,
+        enum: [critical, high, medium, low, informational],
+        description: 'docs/issues-scoring-dashboard-spec.md SCORE 2.3.',
+      }
+    FalsePositiveReasonCode:
+      type: string
+      description: >-
+        MOD-11's controlled vocabulary, published here for clients to render
+        a selector from. `IssueTransitionRequest.reasonCode` itself stays an
+        unconstrained string (ADR 0010: tightening an existing field's
+        validation is a breaking change) — this schema exists purely so the
+        vocabulary has one documented, generated source instead of being
+        duplicated by hand in every client.
+      enum:
+        [
+          not_applicable_environment,
+          patched_not_reflected,
+          false_signature_match,
+          compensating_control,
+          duplicate_of_other_issue,
+          other,
+        ]
+    ExceptionStatus: { type: string, enum: [pending, approved, rejected, expired, revoked] }
+    IntrusivenessProfile: { type: string, enum: [passive-inventory, safe, standard] }
+    AttestationType:
+      { type: string, enum: [self_attested_owner, delegated_authority, contract_engagement, other] }
+    ExclusionRuleType: { type: string, enum: [address, range, port, tag] }
+    ScanRunStatus: { type: string, enum: [queued, running, paused, completed, aborted, failed] }
+    ScanTargetStatus:
+      type: string
+      enum:
+        [
+          pending,
+          in_progress,
+          completed,
+          failed,
+          excluded,
+          skipped_blackout,
+          skipped_fragile_downgrade,
+        ]
+    VerificationOutcome:
+      { type: string, enum: [pending, confirmed_resolved, still_present, inconclusive] }
+    ReportTemplate: { type: string, enum: [executive_summary, technical_detail, delta] }
+    ReportStatus: { type: string, enum: [pending, completed, failed] }
+    NotificationChannelType: { type: string, enum: [email, webhook] }
+    NotificationMode: { type: string, enum: [immediate, digest] }
+    RetentionDataClass:
+      { type: string, enum: [raw_artifacts, observations, resolved_issues, audit_log] }
+
+    MfaChallengeRequired:
+      type: object
+      required: [challengeToken, mfaRequired]
+      properties:
+        mfaRequired: { type: boolean, enum: [true] }
+        challengeToken: { type: string }
+
+    CurrentUser:
+      type: object
+      required: [user, capabilities]
+      properties:
+        user: { $ref: '#/components/schemas/User' }
+        capabilities:
+          type: object
+          description: P1-23 — server-computed UI capability payload. Cosmetic only; SEC-13 enforces server-side regardless.
+          additionalProperties: { type: boolean }
+
+    User:
+      type: object
+      required: [id, email, displayName, role, mfaEnabled, isActive, createdAt]
+      properties:
+        id: { type: string }
+        email: { type: string, format: email }
+        displayName: { type: string }
+        role: { $ref: '#/components/schemas/UserRole' }
+        mfaEnabled: { type: boolean }
+        isActive: { type: boolean }
+        createdAt: { type: string, format: date-time }
+        mustChangePassword:
+          type: boolean
+          default: false
+          description: >-
+            P1-07/SEC-07 — true for an administrator-provisioned account
+            whose password has not yet been set by its owner. The sign-in
+            flow must complete a password change before granting access to
+            anything else.
+
+    SetupStatus:
+      type: object
+      required:
+        [
+          administratorCreated,
+          organizationConfigured,
+          tlsConfigured,
+          initialScopeDeclared,
+          safetyAcknowledged,
+          setupCompleted,
+        ]
+      properties:
+        administratorCreated: { type: boolean }
+        organizationConfigured: { type: boolean }
+        tlsConfigured: { type: boolean }
+        initialScopeDeclared: { type: boolean }
+        safetyAcknowledged: { type: boolean }
+        setupCompleted: { type: boolean }
+
+    OrganizationSettings:
+      type: object
+      required: [organizationName, timezone, tlsMode]
+      properties:
+        organizationName: { type: string }
+        timezone: { type: string }
+        tlsMode: { type: string, enum: [self_signed, customer_certificate] }
+        setupCompletedAt: { oneOf: [{ type: string, format: date-time }, { type: 'null' }] }
+
+    FeatureFlag:
+      type: object
+      required: [key, description, isEnabled]
+      properties:
+        key: { type: string }
+        description: { type: string }
+        isEnabled: { type: boolean }
+        updatedAt: { type: string, format: date-time }
+
+    OsInference:
+      type: object
+      required: [labelUntrusted, confidence]
+      properties:
+        labelUntrusted: { type: string }
+        confidence: { type: number, minimum: 0, maximum: 1 }
+
+    AssetIdentityKey:
+      type: object
+      required: [keyType, keyValueUntrusted, confidence, firstSeen, lastSeen, isActive]
+      properties:
+        keyType: { $ref: '#/components/schemas/IdentityKeyType' }
+        keyValueUntrusted: { type: string }
+        sourceObservationId: { oneOf: [{ type: string }, { type: 'null' }] }
+        confidence: { type: number, minimum: 0, maximum: 1 }
+        firstSeen: { type: string, format: date-time }
+        lastSeen: { type: string, format: date-time }
+        isActive: { type: boolean }
+
+    AssetAddressHistoryEntry:
+      type: object
+      required: [address, firstSeen, lastSeen, isCurrent]
+      properties:
+        address: { type: string }
+        firstSeen: { type: string, format: date-time }
+        lastSeen: { type: string, format: date-time }
+        isCurrent: { type: boolean }
+
+    AssetHostnameHistoryEntry:
+      type: object
+      required: [hostnameUntrusted, firstSeen, lastSeen, isCurrent]
+      properties:
+        hostnameUntrusted: { type: string }
+        firstSeen: { type: string, format: date-time }
+        lastSeen: { type: string, format: date-time }
+        isCurrent: { type: boolean }
+
+    AssetService:
+      type: object
+      required: [port, protocol, firstSeen, lastSeen, isCurrent]
+      properties:
+        port: { type: integer }
+        protocol: { type: string }
+        serviceNameUntrusted: { oneOf: [{ type: string }, { type: 'null' }] }
+        productUntrusted: { oneOf: [{ type: string }, { type: 'null' }] }
+        versionUntrusted: { oneOf: [{ type: string }, { type: 'null' }] }
+        firstSeen: { type: string, format: date-time }
+        lastSeen: { type: string, format: date-time }
+        isCurrent: { type: boolean }
+
+    Asset:
+      type: object
+      required:
+        - id
+        - lifecycleState
+        - identityKeys
+        - addresses
+        - hostnames
+        - services
+        - businessCriticality
+        - exposureClassification
+        - tags
+        - isFragile
+        - firstSeen
+        - lastSeen
+        - riskRating
+        - riskBand
+      properties:
+        id: { type: string }
+        lifecycleState: { $ref: '#/components/schemas/AssetLifecycleState' }
+        mergedIntoAssetId: { oneOf: [{ type: string }, { type: 'null' }] }
+        identityKeys: { type: array, items: { $ref: '#/components/schemas/AssetIdentityKey' } }
+        addresses: { type: array, items: { $ref: '#/components/schemas/AssetAddressHistoryEntry' } }
+        hostnames:
+          { type: array, items: { $ref: '#/components/schemas/AssetHostnameHistoryEntry' } }
+        osInference:
+          oneOf:
+            - $ref: '#/components/schemas/OsInference'
+            - type: 'null'
+        services: { type: array, items: { $ref: '#/components/schemas/AssetService' } }
+        ownerTeam: { oneOf: [{ type: string }, { type: 'null' }] }
+        businessCriticality: { $ref: '#/components/schemas/AssetCriticality' }
+        exposureClassification: { $ref: '#/components/schemas/ExposureClassification' }
+        tags: { type: array, items: { type: string } }
+        isFragile: { type: boolean }
+        firstSeen: { type: string, format: date-time }
+        lastSeen: { type: string, format: date-time }
+        riskRating:
+          {
+            oneOf: [{ type: number, minimum: 0, maximum: 100 }, { type: 'null' }],
+            description: 'docs/issues-scoring-dashboard-spec.md SCORE 2.4/SCORE-08 — null until the asset has at least one open issue.',
+          }
+        riskBand:
+          oneOf:
+            - $ref: '#/components/schemas/RiskBand'
+            - type: 'null'
+
+    AssetMergeEvent:
+      type: object
+      required: [id, survivorAssetId, mergedAssetId, policyVersion, confidence, performedAt]
+      properties:
+        id: { type: string }
+        survivorAssetId: { type: string }
+        mergedAssetId: { type: string }
+        matchedIdentityKeyType: { $ref: '#/components/schemas/IdentityKeyType' }
+        policyVersion: { type: integer }
+        confidence: { type: number, minimum: 0, maximum: 1 }
+        performedBy: { oneOf: [{ type: string }, { type: 'null' }] }
+        performedAt: { type: string, format: date-time }
+        reversedBy: { oneOf: [{ type: string }, { type: 'null' }] }
+        reversedAt: { oneOf: [{ type: string, format: date-time }, { type: 'null' }] }
+        reversalReason: { oneOf: [{ type: string }, { type: 'null' }] }
+
+    AssetGroup:
+      type: object
+      required: [id, name, isDynamic]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        description: { oneOf: [{ type: string }, { type: 'null' }] }
+        isDynamic: { type: boolean }
+        dynamicFilter: { oneOf: [{ type: object, additionalProperties: true }, { type: 'null' }] }
+        memberCount: { type: integer }
+    AssetGroupCreate:
+      type: object
+      required: [name, isDynamic]
+      properties:
+        name: { type: string }
+        description: { oneOf: [{ type: string }, { type: 'null' }] }
+        isDynamic: { type: boolean }
+        dynamicFilter: { oneOf: [{ type: object, additionalProperties: true }, { type: 'null' }] }
+
+    CpeAffectedRange:
+      type: object
+      required: [cpe]
+      properties:
+        cpe: { type: string }
+        versionRange: { oneOf: [{ type: string }, { type: 'null' }] }
+
+    Vulnerability:
+      type: object
+      required: [id, vulnIdentifier, cveIds, cweIds, affectedCpes, knownExploited, dataImportId]
+      properties:
+        id: { type: string }
+        title:
+          type: string
+          description: >-
+            Short, human-scannable name (e.g. "OpenSSH remote code
+            execution") distinct from `description`'s full paragraph — what
+            an Issues-list row title (docs/design/wireframe-issues.md) and
+            any other space-constrained surface render. First-party
+            catalogue content (NVD-derived), not scanner output — no
+            `Untrusted` suffix.
+        vulnIdentifier: { type: string }
+        cveIds: { type: array, items: { type: string } }
+        cweIds: { type: array, items: { type: string } }
+        affectedCpes: { type: array, items: { $ref: '#/components/schemas/CpeAffectedRange' } }
+        cvssVector: { oneOf: [{ type: string }, { type: 'null' }] }
+        cvssVersion:
+          {
+            oneOf: [{ type: string }, { type: 'null' }],
+            description: 'MATCH-15 — which CVSS version cvssVector/cvssBaseScore represent, always shown alongside the score.',
+          }
+        cvssBaseScore: { oneOf: [{ type: number, minimum: 0, maximum: 10 }, { type: 'null' }] }
+        exploitProbability: { oneOf: [{ type: number, minimum: 0, maximum: 1 }, { type: 'null' }] }
+        knownExploited: { type: boolean }
+        knownExploitedSource: { oneOf: [{ type: string }, { type: 'null' }] }
+        publishedAt: { oneOf: [{ type: string, format: date-time }, { type: 'null' }] }
+        modifiedAt: { oneOf: [{ type: string, format: date-time }, { type: 'null' }] }
+        description: { oneOf: [{ type: string }, { type: 'null' }] }
+        canonicalRemediation: { oneOf: [{ type: string }, { type: 'null' }] }
+        dataImportId: { type: string }
+
+    VulnerabilityDataImport:
+      type: object
+      required: [id, sourceName, sourceVersion, status, importedAt]
+      properties:
+        id: { type: string }
+        sourceName: { type: string }
+        sourceVersion: { type: string }
+        status: { type: string, enum: [validating, applied, failed, superseded] }
+        importedAt: { type: string, format: date-time }
+        supersededById: { oneOf: [{ type: string }, { type: 'null' }] }
+
+    Observation:
+      type: object
+      required:
+        [
+          id,
+          scanRunId,
+          scannerAdapterKey,
+          scannerAdapterVersion,
+          rawArtifactId,
+          targetAddress,
+          extractedAttributes,
+          untrustedEvidence,
+          observedAt,
+        ]
+      properties:
+        id: { type: string }
+        scanRunId: { type: string }
+        scannerAdapterKey: { type: string }
+        scannerAdapterVersion: { type: string }
+        rawArtifactId: { type: string }
+        targetAddress: { type: string }
+        targetPort: { oneOf: [{ type: integer }, { type: 'null' }] }
+        targetProtocol: { oneOf: [{ type: string }, { type: 'null' }] }
+        resolvedAssetId: { oneOf: [{ type: string }, { type: 'null' }] }
+        extractedAttributes: { type: object, additionalProperties: true }
+        untrustedEvidence:
+          type: object
+          additionalProperties: { type: string }
+          description: SEC-17 — every value here originated from the scanned target. Escape on output, never render as HTML, never interpret.
+        observedAt: { type: string, format: date-time }
+
+    RawArtifact:
+      type: object
+      required: [id, scanRunId, scannerAdapterKey, contentType, sizeBytes, sha256, capturedAt]
+      properties:
+        id: { type: string }
+        scanRunId: { type: string }
+        scannerAdapterKey: { type: string }
+        contentType: { type: string }
+        sizeBytes: { type: integer }
+        sha256: { type: string }
+        capturedAt: { type: string, format: date-time }
+
+    ScoreFactorContribution:
+      description: >-
+        docs/issues-scoring-dashboard-spec.md SCORE 2.2 — the scoring
+        function is multiplicative, so each row states the input read, the
+        multiplier it applied, and the running score after; the last row's
+        runningScore always equals the issue's riskScore.
+      type: object
+      required: [factor, inputDescription, multiplier, runningScore]
+      properties:
+        factor:
+          {
+            type: string,
+            enum:
+              [
+                cvssBaseScore,
+                exploitProbability,
+                knownExploited,
+                exposureClassification,
+                assetCriticality,
+                confidence,
+              ],
+          }
+        inputDescription: { type: string }
+        multiplier: { type: number }
+        runningScore: { type: number }
+
+    RiskScoreSnapshot:
+      type: object
+      required: [id, issueId, policyVersion, totalScore, breakdown, trigger, computedAt]
+      properties:
+        id: { type: string }
+        issueId: { type: string }
+        policyVersion: { type: integer }
+        totalScore: { type: number, minimum: 0, maximum: 100 }
+        breakdown: { type: array, items: { $ref: '#/components/schemas/ScoreFactorContribution' } }
+        trigger:
+          {
+            type: string,
+            enum:
+              [
+                initial_score,
+                new_observation,
+                weights_changed,
+                manual_recompute,
+                vuln_data_updated,
+              ],
+          }
+        computedAt: { type: string, format: date-time }
+
+    Issue:
+      type: object
+      required:
+        - id
+        - fingerprint
+        - fingerprintVersion
+        - assetId
+        - severity
+        - riskScore
+        - riskScorePolicyVersion
+        - confidence
+        - confidenceLabel
+        - state
+        - contributingObservationIds
+        - firstSeen
+        - lastSeen
+      properties:
+        id: { type: string }
+        fingerprint: { type: string }
+        fingerprintVersion: { type: integer }
+        assetId: { type: string }
+        title:
+          type: string
+          description: >-
+            Denormalised short title (Vulnerability.title for a CVE-backed
+            issue, or the configuration/exposure issue-type label for a
+            MOD-04 no-CVE issue) — carried directly on Issue so the Issues
+            list (P1-11) never needs a per-row join just to render a title.
+        primaryCveId:
+          oneOf: [{ type: string }, { type: 'null' }]
+          description: 'Denormalised from vulnerability.cveIds[0] — null for a MOD-04 configuration/exposure issue with no CVE.'
+        assetLabelUntrusted:
+          type: string
+          description: >-
+            Denormalised from the parent asset's current hostname (falling
+            back to its current address) — lets the Issues list (P1-11)
+            render an asset column without an N+1 asset lookup per row.
+            Scanner-derived (SEC-17): plain text only, never interpreted.
+        vulnerabilityId: { oneOf: [{ type: string }, { type: 'null' }] }
+        port: { oneOf: [{ type: integer }, { type: 'null' }] }
+        protocol: { oneOf: [{ type: string }, { type: 'null' }] }
+        serviceUntrusted: { oneOf: [{ type: string }, { type: 'null' }] }
+        productUntrusted: { oneOf: [{ type: string }, { type: 'null' }] }
+        versionUntrusted: { oneOf: [{ type: string }, { type: 'null' }] }
+        severity: { type: string, enum: [info, low, medium, high, critical] }
+        riskScore: { type: number, minimum: 0, maximum: 100 }
+        riskScorePolicyVersion: { type: integer }
+        confidence: { type: number, minimum: 0, maximum: 1 }
+        confidenceLabel: { $ref: '#/components/schemas/ConfidenceLabel' }
+        state: { $ref: '#/components/schemas/IssueState' }
+        contributingObservationIds: { type: array, items: { type: string } }
+        ownerUserId: { oneOf: [{ type: string }, { type: 'null' }] }
+        dueDate: { oneOf: [{ type: string, format: date-time }, { type: 'null' }] }
+        exceptionId: { oneOf: [{ type: string }, { type: 'null' }] }
+        firstSeen: { type: string, format: date-time }
+        lastSeen: { type: string, format: date-time }
+        lastVerifiedAt: { oneOf: [{ type: string, format: date-time }, { type: 'null' }] }
+
+    IssueDetail:
+      description: MOD-21 — the detail view. Every finding here is inspectable, never presented without its evidence.
+      allOf:
+        - $ref: '#/components/schemas/Issue'
+        - type: object
+          required: [asset, vulnerability, observations, riskScoreBreakdown, remediationGuidance]
+          properties:
+            asset: { $ref: '#/components/schemas/Asset' }
+            vulnerability:
+              oneOf:
+                - $ref: '#/components/schemas/Vulnerability'
+                - type: 'null'
+            observations: { type: array, items: { $ref: '#/components/schemas/Observation' } }
+            riskScoreBreakdown:
+              { type: array, items: { $ref: '#/components/schemas/ScoreFactorContribution' } }
+            remediationGuidance:
+              oneOf:
+                - type: object
+                  required: [priorityRationale, remediationSteps]
+                  properties:
+                    priorityRationale: { type: string }
+                    remediationSteps: { type: string }
+                    references: { type: array, items: { type: string } }
+                - type: 'null'
+
+    IssueTransitionRequest:
+      type: object
+      required: [toState]
+      properties:
+        toState:
+          type: string
+          enum: [triaged, in_progress, mitigated, reopened, false_positive, risk_accepted]
+          description: verified_resolved is intentionally excluded — MOD-13 makes it system-only, set only by a verification scan result.
+        reasonCode:
+          type: string
+          description: Required, controlled-vocabulary, when toState is false_positive (MOD-11).
+        justification:
+          type: string
+          description: Required (with reasonCode and an authorised actor) when toState is false_positive (MOD-11).
+
+    IssueStateHistoryEntry:
+      type: object
+      required: [id, issueId, toState, transitionedAt]
+      properties:
+        id: { type: string }
+        issueId: { type: string }
+        fromState: { $ref: '#/components/schemas/IssueState' }
+        toState: { $ref: '#/components/schemas/IssueState' }
+        actorUserId: { oneOf: [{ type: string }, { type: 'null' }] }
+        reasonCode: { oneOf: [{ type: string }, { type: 'null' }] }
+        justification: { oneOf: [{ type: string }, { type: 'null' }] }
+        verificationScanId: { oneOf: [{ type: string }, { type: 'null' }] }
+        transitionedAt: { type: string, format: date-time }
+
+    SavedView:
+      type: object
+      required: [id, name, query, isShared]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        query:
+          type: string
+          description: The encoded filter/sort/pagination query string (P1-25) — a saved view is a named, storable version of a shareable URL.
+        isShared: { type: boolean }
+        createdBy: { type: string }
+    SavedViewCreate:
+      type: object
+      required: [name, query, isShared]
+      properties:
+        name: { type: string }
+        query: { type: string }
+        isShared: { type: boolean }
+
+    Exception:
+      type: object
+      required: [id, issueId, requestedBy, justification, expiresAt, status]
+      properties:
+        id: { type: string }
+        issueId: { type: string }
+        requestedBy: { type: string }
+        requestedAt: { type: string, format: date-time }
+        justification: { type: string }
+        approverUserId: { oneOf: [{ type: string }, { type: 'null' }] }
+        approvedAt: { oneOf: [{ type: string, format: date-time }, { type: 'null' }] }
+        expiresAt: { type: string, format: date-time }
+        status: { $ref: '#/components/schemas/ExceptionStatus' }
+
+    RiskScoringWeights:
+      description: docs/issues-scoring-dashboard-spec.md SCORE 2.2's multiplicative weight table.
+      type: object
+      required:
+        [
+          knownExploitedMultiplier,
+          exploitProbabilityBaseMultiplier,
+          exploitProbabilityScale,
+          exposure,
+          criticality,
+          confidence,
+        ]
+      properties:
+        knownExploitedMultiplier: { type: number }
+        exploitProbabilityBaseMultiplier: { type: number }
+        exploitProbabilityScale: { type: number }
+        exposure:
+          type: object
+          required: [external, dmz, internal, isolated, unknown]
+          properties:
+            external: { type: number }
+            dmz: { type: number }
+            internal: { type: number }
+            isolated: { type: number }
+            unknown: { type: number }
+        criticality:
+          type: object
+          required: [critical, high, medium, low]
+          properties:
+            critical: { type: number }
+            high: { type: number }
+            medium: { type: number }
+            low: { type: number }
+        confidence:
+          type: object
+          required: [verified, corroborated, inferred]
+          properties:
+            verified: { type: number }
+            corroborated: { type: number }
+            inferred: { type: number }
+
+    RiskScoringPolicy:
+      type: object
+      required: [version, weights, isActive, createdAt]
+      properties:
+        version: { type: integer }
+        weights: { $ref: '#/components/schemas/RiskScoringWeights' }
+        isActive: { type: boolean }
+        createdBy: { type: string }
+        createdAt: { type: string, format: date-time }
+
+    SlaPolicyRow:
+      type: object
+      required: [riskBand, assetCriticality, dueWithinDays]
+      properties:
+        riskBand: { type: string, enum: [low, medium, high, critical] }
+        assetCriticality: { $ref: '#/components/schemas/AssetCriticality' }
+        dueWithinDays: { type: integer, minimum: 1 }
+    SlaPolicy:
+      allOf:
+        - $ref: '#/components/schemas/SlaPolicyRow'
+        - type: object
+          required: [id, version, isActive]
+          properties:
+            id: { type: string }
+            version: { type: integer }
+            isActive: { type: boolean }
+
+    AuthorizedScopeCreate:
+      type: object
+      required: [name, attestationType, attestationDetails]
+      properties:
+        name: { type: string }
+        cidrRanges: { type: array, items: { type: string } }
+        hostnames: { type: array, items: { type: string } }
+        attestationType: { $ref: '#/components/schemas/AttestationType' }
+        attestationDetails: { type: string }
+    AuthorizedScope:
+      allOf:
+        - $ref: '#/components/schemas/AuthorizedScopeCreate'
+        - type: object
+          required: [id, acceptedByUserId, acceptedAt]
+          properties:
+            id: { type: string }
+            acceptedByUserId: { type: string }
+            acceptedAt: { type: string, format: date-time }
+            supersededById: { oneOf: [{ type: string }, { type: 'null' }] }
+
+    ExclusionRuleCreate:
+      type: object
+      required: [ruleType, value, reason]
+      properties:
+        scopeId:
+          { oneOf: [{ type: string }, { type: 'null' }], description: 'null = applies globally' }
+        ruleType: { $ref: '#/components/schemas/ExclusionRuleType' }
+        value: { type: string }
+        reason: { type: string }
+    ExclusionRule:
+      allOf:
+        - $ref: '#/components/schemas/ExclusionRuleCreate'
+        - type: object
+          required: [id, createdBy, isActive]
+          properties:
+            id: { type: string }
+            createdBy: { type: string }
+            isActive: { type: boolean }
+
+    PacingConfig:
+      type: object
+      required: [packetsPerSecond, concurrentHosts, concurrentPortsPerHost, timeoutMs, retries]
+      properties:
+        packetsPerSecond: { type: integer, minimum: 1 }
+        concurrentHosts: { type: integer, minimum: 1 }
+        concurrentPortsPerHost: { type: integer, minimum: 1 }
+        timeoutMs: { type: integer, minimum: 1 }
+        retries: { type: integer, minimum: 0 }
+
+    ScanProfileCreate:
+      type: object
+      required: [name, intrusiveness, pacing]
+      properties:
+        name: { type: string }
+        intrusiveness: { $ref: '#/components/schemas/IntrusivenessProfile' }
+        pacing: { $ref: '#/components/schemas/PacingConfig' }
+    ScanProfile:
+      allOf:
+        - $ref: '#/components/schemas/ScanProfileCreate'
+        - type: object
+          required: [id, requiresConfirmation]
+          properties:
+            id: { type: string }
+            requiresConfirmation:
+              type: boolean
+              description: 'true for `standard` (SAFE-03): typed confirmation required at scan-run creation.'
+
+    PacingCeilings:
+      type: object
+      required:
+        [
+          maxPacketsPerSecond,
+          maxConcurrentHosts,
+          maxConcurrentPortsPerHost,
+          maxTimeoutMs,
+          maxRetries,
+        ]
+      properties:
+        maxPacketsPerSecond: { type: integer }
+        maxConcurrentHosts: { type: integer }
+        maxConcurrentPortsPerHost: { type: integer }
+        maxTimeoutMs: { type: integer }
+        maxRetries: { type: integer }
+
+    FragileDeviceRule:
+      type: object
+      required: [id, deviceClass, isEnabled]
+      properties:
+        id: { type: string }
+        deviceClass: { type: string }
+        matchCriteria: { type: object, additionalProperties: true }
+        isEnabled: { type: boolean }
+
+    BlackoutWindowCreate:
+      type: object
+      required: [name, timezone, startsAt, endsAt, isRecurring]
+      properties:
+        scopeId: { oneOf: [{ type: string }, { type: 'null' }], description: 'null = global' }
+        name: { type: string }
+        timezone: { type: string }
+        startsAt: { type: string, format: date-time }
+        endsAt: { type: string, format: date-time }
+        isRecurring: { type: boolean }
+        rrule: { oneOf: [{ type: string }, { type: 'null' }] }
+    BlackoutWindow:
+      allOf:
+        - $ref: '#/components/schemas/BlackoutWindowCreate'
+        - type: object
+          required: [id]
+          properties:
+            id: { type: string }
+
+    ScanScheduleCreate:
+      type: object
+      required: [name, scopeId, profileId, cronExpression, timezone]
+      properties:
+        name: { type: string }
+        scopeId: { type: string }
+        profileId: { type: string }
+        cronExpression: { type: string }
+        timezone: { type: string }
+        isEnabled: { type: boolean, default: true }
+    ScanSchedule:
+      allOf:
+        - $ref: '#/components/schemas/ScanScheduleCreate'
+        - type: object
+          required: [id]
+          properties:
+            id: { type: string }
+            nextRunAt: { oneOf: [{ type: string, format: date-time }, { type: 'null' }] }
+
+    ScanPlanPreviewExcludedTarget:
+      type: object
+      required: [target, ruleId]
+      properties:
+        target: { type: string }
+        ruleId: { type: string }
+    ScanPlanPreviewFragileDowngrade:
+      type: object
+      required: [target, deviceClass]
+      properties:
+        target: { type: string }
+        deviceClass: { type: string }
+    ScanPlanPreview:
+      type: object
+      required:
+        [
+          id,
+          scopeId,
+          profileId,
+          targetCount,
+          estimatedPacketVolume,
+          estimatedDurationSeconds,
+          excludedTargets,
+          fragileDowngrades,
+        ]
+      properties:
+        id: { type: string }
+        scopeId: { type: string }
+        profileId: { type: string }
+        targetCount: { type: integer }
+        estimatedPacketVolume: { type: integer }
+        estimatedDurationSeconds: { type: integer }
+        excludedTargets:
+          { type: array, items: { $ref: '#/components/schemas/ScanPlanPreviewExcludedTarget' } }
+        fragileDowngrades:
+          { type: array, items: { $ref: '#/components/schemas/ScanPlanPreviewFragileDowngrade' } }
+        confirmedByUserId: { oneOf: [{ type: string }, { type: 'null' }] }
+        confirmedAt: { oneOf: [{ type: string, format: date-time }, { type: 'null' }] }
+
+    ScanRun:
+      type: object
+      required: [id, planPreviewId, scopeId, profileId, status, correlationId, queuedAt]
+      properties:
+        id: { type: string }
+        planPreviewId: { type: string }
+        scopeId: { type: string }
+        profileId: { type: string }
+        initiatedByUserId: { oneOf: [{ type: string }, { type: 'null' }] }
+        status: { $ref: '#/components/schemas/ScanRunStatus' }
+        correlationId:
+          {
+            type: string,
+            description: OPS-01 — propagated from the HTTP request through the queue job to the scanner invocation.,
+          }
+        queuedAt: { type: string, format: date-time }
+        startedAt: { oneOf: [{ type: string, format: date-time }, { type: 'null' }] }
+        completedAt: { oneOf: [{ type: string, format: date-time }, { type: 'null' }] }
+        abortedByUserId: { oneOf: [{ type: string }, { type: 'null' }] }
+        targetsCompleted: { type: integer }
+        targetsTotal: { type: integer }
+
+    ScanRunTarget:
+      type: object
+      required: [id, scanRunId, targetAddress, status]
+      properties:
+        id: { type: string }
+        scanRunId: { type: string }
+        targetAddress: { type: string }
+        targetPort: { oneOf: [{ type: integer }, { type: 'null' }] }
+        status: { $ref: '#/components/schemas/ScanTargetStatus' }
+        excludedByRuleId: { oneOf: [{ type: string }, { type: 'null' }] }
+
+    GlobalStopEvent:
+      type: object
+      required: [id, invokedVia, invokedAt, scanRunsHalted]
+      properties:
+        id: { type: string }
+        invokedByUserId: { oneOf: [{ type: string }, { type: 'null' }] }
+        invokedVia: { type: string, enum: [web, cli] }
+        invokedAt: { type: string, format: date-time }
+        reason: { oneOf: [{ type: string }, { type: 'null' }] }
+        scanRunsHalted: { type: array, items: { type: string } }
+
+    VerificationScan:
+      type: object
+      required: [id, issueId, scanRunId, requestedAt, outcome]
+      properties:
+        id: { type: string }
+        issueId: { type: string }
+        scanRunId: { type: string }
+        requestedBy: { oneOf: [{ type: string }, { type: 'null' }] }
+        requestedAt: { type: string, format: date-time }
+        outcome: { $ref: '#/components/schemas/VerificationOutcome' }
+        resolvedAt: { oneOf: [{ type: string, format: date-time }, { type: 'null' }] }
+
+    ScannerAdapter:
+      type: object
+      required: [adapterKey, version, fidelityRating, isEnabled]
+      properties:
+        adapterKey: { type: string }
+        version: { type: string }
+        fidelityRating: { type: number, minimum: 0, maximum: 1 }
+        capabilities: { type: object, additionalProperties: true }
+        isEnabled: { type: boolean }
+
+    ReportCreate:
+      type: object
+      required: [template, scopeFilter, formats]
+      properties:
+        template: { $ref: '#/components/schemas/ReportTemplate' }
+        scopeFilter: { type: object, additionalProperties: true }
+        dateRangeStart: { type: string, format: date, description: delta template only. }
+        dateRangeEnd: { type: string, format: date }
+        formats: { type: array, items: { type: string, enum: [html, csv, json] }, minItems: 1 }
+    Report:
+      type: object
+      required: [id, template, status, formats, generatedBy, generatedAt]
+      properties:
+        id: { type: string }
+        template: { $ref: '#/components/schemas/ReportTemplate' }
+        scopeFilter: { type: object, additionalProperties: true }
+        dateRangeStart: { oneOf: [{ type: string, format: date }, { type: 'null' }] }
+        dateRangeEnd: { oneOf: [{ type: string, format: date }, { type: 'null' }] }
+        status: { $ref: '#/components/schemas/ReportStatus' }
+        dataVersions:
+          oneOf:
+            - type: object
+              properties:
+                vulnerabilityDataImportId: { type: string }
+                riskScoringPolicyVersion: { type: integer }
+            - type: 'null'
+        formats: { type: array, items: { type: string, enum: [html, csv, json] } }
+        blobStoreKey: { oneOf: [{ type: string }, { type: 'null' }] }
+        generatedBy: { type: string }
+        generatedAt: { type: string, format: date-time }
+        completedAt: { oneOf: [{ type: string, format: date-time }, { type: 'null' }] }
+
+    NotificationChannelCreate:
+      type: object
+      required: [type, config, isEnabled]
+      properties:
+        type: { $ref: '#/components/schemas/NotificationChannelType' }
+        config:
+          {
+            type: object,
+            additionalProperties: true,
+            description: 'Non-secret config only (SEC-05) — addresses, URLs.',
+          }
+        secretRef:
+          {
+            oneOf: [{ type: string }, { type: 'null' }],
+            description: 'Opaque reference into secret storage (SEC-05) — never the raw secret.',
+          }
+        isEnabled: { type: boolean }
+    NotificationChannel:
+      allOf:
+        - $ref: '#/components/schemas/NotificationChannelCreate'
+        - type: object
+          required: [id]
+          properties:
+            id: { type: string }
+
+    NotificationEvent:
+      type: object
+      required: [id, channelId, eventType, mode, status]
+      properties:
+        id: { type: string }
+        channelId: { type: string }
+        eventType:
+          {
+            type: string,
+            enum:
+              [scan_completed, new_high_risk_issue, sla_breach, exception_expiry, system_degraded],
+          }
+        mode: { $ref: '#/components/schemas/NotificationMode' }
+        status: { type: string, enum: [pending, sent, failed] }
+        attemptedAt: { oneOf: [{ type: string, format: date-time }, { type: 'null' }] }
+        deliveredAt: { oneOf: [{ type: string, format: date-time }, { type: 'null' }] }
+        error: { oneOf: [{ type: string }, { type: 'null' }] }
+
+    AuditEntry:
+      type: object
+      required: [id, action, targetType, targetId, outcome, occurredAt, entryHash, prevEntryHash]
+      properties:
+        id: { type: integer }
+        actorUserId: { oneOf: [{ type: string }, { type: 'null' }] }
+        sessionId: { oneOf: [{ type: string }, { type: 'null' }] }
+        sourceAddress: { oneOf: [{ type: string }, { type: 'null' }] }
+        action: { type: string }
+        targetType: { type: string }
+        targetId: { type: string }
+        beforeState: { oneOf: [{ type: object, additionalProperties: true }, { type: 'null' }] }
+        afterState: { oneOf: [{ type: object, additionalProperties: true }, { type: 'null' }] }
+        outcome: { type: string, enum: [success, failure, denied] }
+        occurredAt: { type: string, format: date-time }
+        prevEntryHash: { type: string }
+        entryHash: { type: string }
+
+    AuditChainVerificationResult:
+      type: object
+      required: [verifiedUpToId, gapsDetected, hashMismatches, isIntact]
+      properties:
+        verifiedUpToId: { type: integer }
+        gapsDetected:
+          type: array
+          items:
+            type: object
+            required: [afterId, expectedNextId]
+            properties:
+              afterId: { type: integer }
+              expectedNextId: { type: integer }
+        hashMismatches:
+          type: array
+          items:
+            type: object
+            required: [id]
+            properties: { id: { type: integer } }
+        isIntact: { type: boolean }
+
+    RetentionPolicy:
+      type: object
+      required: [dataClass, retentionDays, minimumFloorDays]
+      properties:
+        dataClass: { $ref: '#/components/schemas/RetentionDataClass' }
+        retentionDays: { type: integer }
+        minimumFloorDays:
+          {
+            type: integer,
+            description: 'The UI will not allow retentionDays below this (DATA-04).',
+          }
+
+    BackupRecord:
+      type: object
+      required: [id, startedAt, status, archiveLocation, encrypted]
+      properties:
+        id: { type: string }
+        startedAt: { type: string, format: date-time }
+        completedAt: { oneOf: [{ type: string, format: date-time }, { type: 'null' }] }
+        status: { type: string, enum: [running, completed, failed] }
+        archiveLocation: { type: string }
+        sizeBytes: { oneOf: [{ type: integer }, { type: 'null' }] }
+        encrypted: { type: boolean }
+        restoreTestedAt: { oneOf: [{ type: string, format: date-time }, { type: 'null' }] }
+        measuredRpoSeconds: { oneOf: [{ type: integer }, { type: 'null' }] }
+        measuredRtoSeconds: { oneOf: [{ type: integer }, { type: 'null' }] }
+
+    IntelImport:
+      type: object
+      required: [id, sourceName, sourceVersion, status, importedAt]
+      properties:
+        id: { type: string }
+        sourceName: { type: string }
+        sourceVersion: { type: string }
+        status: { type: string, enum: [validating, applied, failed, superseded] }
+        fetched: { oneOf: [{ type: integer }, { type: 'null' }] }
+        added: { oneOf: [{ type: integer }, { type: 'null' }] }
+        modified: { oneOf: [{ type: integer }, { type: 'null' }] }
+        discarded: { oneOf: [{ type: integer }, { type: 'null' }] }
+        failureReason: { oneOf: [{ type: string }, { type: 'null' }] }
+        importedAt: { type: string, format: date-time }
+        importedBy: { oneOf: [{ type: string }, { type: 'null' }] }
+        supersededById: { oneOf: [{ type: string }, { type: 'null' }] }
+
+    IntelStatus:
+      type: object
+      required: [onlineUpdatesDisabled, totalVulnerabilities, knownExploitedCount]
+      properties:
+        onlineUpdatesDisabled: { type: boolean }
+        activeCorpusImport: { oneOf: [{ $ref: '#/components/schemas/IntelImport' }, { type: 'null' }] }
+        lastSyncAttempt: { oneOf: [{ $ref: '#/components/schemas/IntelImport' }, { type: 'null' }] }
+        totalVulnerabilities: { type: integer }
+        knownExploitedCount: { type: integer }
+
+    IntelSettings:
+      type: object
+      required: [onlineUpdatesDisabled]
+      properties:
+        onlineUpdatesDisabled: { type: boolean }
+
+    SystemHealth:
+      type: object
+      required:
+        [components, vulnerabilityDataAgeDays, diskHeadroomBytes, queueBacklog, degradedSubsystems]
+      properties:
+        components:
+          type: array
+          items:
+            type: object
+            required: [name, status]
+            properties:
+              name: { type: string }
+              status: { type: string, enum: [ok, degraded, down] }
+              detail: { type: string }
+        vulnerabilityDataAgeDays: { type: number }
+        templateVersions: { type: object, additionalProperties: { type: string } }
+        diskHeadroomBytes: { type: integer }
+        diskHeadroomProjectionDays: { oneOf: [{ type: number }, { type: 'null' }] }
+        lastSuccessfulBackupAt: { oneOf: [{ type: string, format: date-time }, { type: 'null' }] }
+        queueBacklog: { type: integer }
+        degradedSubsystems: { type: array, items: { type: string } }
+
+    DashboardSummary:
+      type: object
+      required:
+        [
+          riskPosture,
+          topIssues,
+          exposureBreakdown,
+          criticalityBreakdown,
+          slaCompliance,
+          coverage,
+          activeScans,
+        ]
+      properties:
+        riskPosture:
+          type: object
+          properties:
+            openIssuesByRiskBand: { type: object, additionalProperties: { type: integer } }
+        topIssues:
+          type: array
+          description: Every tile links to a pre-filtered issues view (3.8) — no vanity metrics.
+          items: { $ref: '#/components/schemas/Issue' }
+        exposureBreakdown: { type: object, additionalProperties: { type: integer } }
+        criticalityBreakdown: { type: object, additionalProperties: { type: integer } }
+        slaCompliance:
+          type: object
+          required: [onTrack, approachingDue, overdue]
+          properties:
+            onTrack: { type: integer }
+            approachingDue: { type: integer }
+            overdue: { type: integer }
+        coverage:
+          type: object
+          properties:
+            assetsScannedLast30Days: { type: integer }
+            assetsTotal: { type: integer }
+        trend:
+          type: array
+          items:
+            type: object
+            required: [date, openIssues]
+            properties:
+              date: { type: string, format: date }
+              openIssues: { type: integer }
+        activeScans: { type: array, items: { $ref: '#/components/schemas/ScanRun' } }
+        exceptionsApproachingExpiry:
+          type: array
+          description: >-
+            Approved exceptions (MOD-12) expiring within the policy's
+            approaching-expiry window — resolves docs/design/review.md's
+            open question on whether this is a real dashboard tile: yes,
+            backed by actual exception records, not a placeholder.
+          items: { $ref: '#/components/schemas/Exception' }

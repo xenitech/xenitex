@@ -1,0 +1,67 @@
+.block {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-panel);
+  overflow: hidden;
+  background: var(--color-surface-sunken);
+}
+
+.meta {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  padding: var(--space-4) var(--space-6);
+  border-bottom: 1px solid var(--color-border);
+  font-size: var(--font-size-2xs);
+  color: var(--color-ink-muted);
+}
+
+.metaLink {
+  color: var(--color-accent);
+  text-decoration: none;
+}
+
+.metaLink:hover,
+.metaLink:focus-visible {
+  text-decoration: underline;
+}
+
+.code {
+  margin: 0;
+  padding: var(--space-4) 0;
+  overflow-x: auto;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  /* UI-94: evidence blocks are logically LTR content regardless of interface
+     direction — a raw HTTP request/CVE string must not be bidi-reordered. */
+  direction: ltr;
+  text-align: left;
+}
+
+.line {
+  display: grid;
+  grid-template-columns: 3ch 1fr;
+  gap: var(--space-5);
+  padding: 0 var(--space-6);
+  white-space: pre;
+}
+
+.line[data-matched='true'] {
+  background: var(--color-accent-subtle);
+}
+
+.lineNumber {
+  color: var(--color-ink-subtle);
+  text-align: right;
+  user-select: none; /* copying evidence text should never include line numbers */
+  font-variant-numeric: tabular-nums;
+}
+
+.lineContent {
+  color: var(--color-ink);
+}
+
+.match {
+  background: var(--color-accent-subtle);
+  outline: 1px solid var(--color-accent);
+  border-radius: var(--radius-none);
+}

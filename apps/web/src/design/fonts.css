@@ -1,0 +1,13 @@
+/**
+ * SEC-01/P1-26/UI-23: self-hosted font files only — no CDN, no Google Fonts
+ * link tag, since the appliance is air-gapped at runtime. Weights match what
+ * tokens.css's --font-weight-* scale actually uses (400/500/600); nothing
+ * wider is imported to keep the bundle budget honest.
+ */
+@import '@fontsource/inter/400.css';
+@import '@fontsource/inter/500.css';
+@import '@fontsource/inter/600.css';
+@import '@fontsource/jetbrains-mono/400.css';
+@import '@fontsource/jetbrains-mono/500.css';
+/* Variable font: one file covers the whole weight range Persian UI text needs. */
+@import '@fontsource-variable/vazirmatn';

@@ -1,0 +1,197 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  # PERF/QA note: this pins the Node version the appliance actually ships on
+  # (see .nvmrc); the sandbox this repo was scaffolded in only had Node 18
+  # available, which is why local verification during Step 1 ran select
+  # commands directly rather than through `pnpm`/`turbo` end-to-end.
+  NODE_VERSION: '20'
+
+jobs:
+  lint-typecheck-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: 'Verify generated API client matches openapi.yaml (P1-02)'
+        run: pnpm --filter @xenitex/contracts run verify-generated
+
+      - name: Format check
+        run: pnpm format
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Unit tests
+        run: pnpm test
+
+  integration-tests:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: xenitex_ci
+          POSTGRES_DB: xenitex_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        # Valkey, not Redis -- see docs/licence-review.md Finding 2.
+        image: valkey/valkey:8-alpine
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd "valkey-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: 'Apply migrations (QA-01: real Postgres, not a mock)'
+        # The same runner apps/api and apps/worker use in every other
+        # environment (packages/db/src/migrate.ts) — not a parallel psql
+        # loop that could silently drift from what actually ships.
+        run: pnpm --filter @xenitex/db exec tsx src/migrate.ts up ../../apps/api/db/migrations
+        env:
+          DATABASE_URL: postgres://postgres:xenitex_ci@localhost:5432/xenitex_test
+
+      - name: Set xenitex_app / xenitex_retention_worker passwords
+        # 0001_init.up.sql creates these roles with no password (a real
+        # value has no business in a checked-in migration, SEC-05); this is
+        # the same one-off step a real deployment runs. CI's values are
+        # thrown away with the runner, so a fixed string is fine here.
+        run: pnpm --filter @xenitex/db exec tsx src/set-role-passwords.ts
+        env:
+          DATABASE_URL: postgres://postgres:xenitex_ci@localhost:5432/xenitex_test
+          XENITEX_APP_PASSWORD: xenitex_app_ci
+          XENITEX_RETENTION_WORKER_PASSWORD: xenitex_retention_worker_ci
+
+      - name: 'Integration tests: packages/db'
+        # The migration runner's own up/down cycle needs real DDL (CREATE
+        # ROLE, DROP ROLE, ALTER DEFAULT PRIVILEGES) — this one stays on
+        # the Postgres superuser, unlike apps/api below.
+        run: pnpm --filter @xenitex/db test:integration
+        env:
+          DATABASE_URL: postgres://postgres:xenitex_ci@localhost:5432/xenitex_test
+
+      - name: 'Integration tests: apps/api'
+        # Runs as xenitex_app, the same restricted role apps/api and
+        # apps/worker actually connect as in every real environment --
+        # running this as the Postgres superuser (as this job did before)
+        # silently hides any missing GRANT (e.g. sequence privileges on a
+        # bigserial column), since a superuser bypasses every privilege
+        # check regardless of what the schema actually grants xenitex_app.
+        # ADMIN_DATABASE_URL is only for the one test that deliberately
+        # simulates an attacker with raw table access (audit-log tamper
+        # detection) — xenitex_app correctly cannot do that UPDATE itself.
+        run: pnpm --filter @xenitex/api test:integration
+        env:
+          DATABASE_URL: postgres://xenitex_app:xenitex_app_ci@localhost:5432/xenitex_test
+          ADMIN_DATABASE_URL: postgres://postgres:xenitex_ci@localhost:5432/xenitex_test
+          REDIS_URL: redis://localhost:6379
+
+  visual-regression:
+    # P1-27: every component in the §5 catalogue gets a visual regression
+    # test, checked in both themes and both directions against the static
+    # Storybook build. Baselines live in apps/web/tests/visual/__screenshots__
+    # and are committed -- update them deliberately with
+    # `pnpm --filter @xenitex/web test:visual:update` when a change is intentional.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Playwright browser
+        run: pnpm --filter @xenitex/web exec playwright install --with-deps chromium
+
+      - name: Build Storybook
+        run: pnpm --filter @xenitex/web build-storybook
+
+      - name: Visual regression tests
+        run: pnpm --filter @xenitex/web test:visual
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-report
+          path: apps/web/playwright-report/
+
+  supply-chain:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Dependency vulnerability scan (SEC-15)
+        # Release-blocking policy: any HIGH or CRITICAL advisory fails the build.
+        # MODERATE/LOW are reported but non-blocking pending triage in the tracker (QA-07).
+        run: pnpm audit --prod --audit-level=high
+
+      - name: Generate SBOM (LEG-04)
+        run: pnpm sbom
+
+      - name: Assert no remote-execution dependency (PRIN-03)
+        run: pnpm assert:no-remote-exec-deps
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: sbom/sbom.json

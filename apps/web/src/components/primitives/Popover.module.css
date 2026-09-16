@@ -1,0 +1,46 @@
+.trigger {
+  display: inline-flex;
+  align-items: center;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+  border-radius: var(--radius-control);
+}
+
+.trigger:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+.panel {
+  position: absolute;
+  z-index: 50;
+  margin-top: var(--space-2);
+  min-width: 260px;
+  max-width: 360px;
+  background: var(--color-surface-raised);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-panel);
+  box-shadow: var(--elevation-overlay-shadow);
+  padding: var(--space-6);
+  opacity: 0;
+  transform: translateY(-2px);
+  pointer-events: none;
+  /* UI-33: opacity keeps --duration-fade (never zeroed by the
+     reduced-motion override); the position settle uses --duration-overlay,
+     which the override does zero. Two separately-timed properties, not one
+     animation, is what actually satisfies "removes all transitions except
+     opacity" rather than approximating it. */
+  transition:
+    opacity var(--duration-fade) var(--easing-standard),
+    transform var(--duration-overlay) var(--easing-standard);
+}
+
+.panel[data-open='true'] {
+  opacity: 1;
+  transform: translateY(0);
+  pointer-events: auto;
+}
