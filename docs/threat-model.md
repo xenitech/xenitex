@@ -48,7 +48,7 @@ Trust boundaries, numbered for cross-reference below:
 
 | Threat                 | Scenario                                                                                                                         | Mitigation                                                                                                                                                                                                   | Requirement                |
 | ---------------------- | -------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------- |
-| Spoofing               | Attacker on the customer's network impersonates a legitimate user's session                                                      | Opaque server-side sessions, `HttpOnly`/`Secure`/`SameSite=Strict` cookies, MFA mandatory for operator/administrator                                                                                         | `SEC-08`, `SEC-09`         |
+| Spoofing               | Attacker on the customer's network impersonates a legitimate user's session                                                      | Opaque server-side sessions, `HttpOnly`/`Secure`/`SameSite=Strict` cookies, MFA for operator/administrator — see the deployment note below                                                                   | `SEC-08`, `SEC-09`         |
 | Spoofing               | Credential stuffing / brute force against login                                                                                  | Rate limiting with lockout, keyed by account and source address; breached-password check at signup                                                                                                           | `SEC-11`, `SEC-07`         |
 | Tampering              | CSRF against a state-changing endpoint (e.g. triggering a scan, approving an exception)                                          | Double-submit CSRF token required on all state-changing requests                                                                                                                                             | `SEC-08`                   |
 | Tampering              | XSS via a scanner-derived string (banner, cert subject) rendered unescaped in the issue detail view                              | Every such string is wrapped `Untrusted<T>` in the domain model (`packages/domain/src/primitives.ts`) and never reaches the DOM without explicit escaping; CSP forbids inline/eval script as a second layer  | `SEC-17`, `SEC-10`         |
@@ -99,6 +99,44 @@ Trust boundaries, numbered for cross-reference below:
 | Tampering         | A malformed or hostile job payload crashes or exploits the worker             | Schema validation at every boundary (`SEC-12`), applied to queue payloads exactly as to HTTP requests, not just at the API edge                                                                                                                                                        | `SEC-12`                   |
 | Denial of service | Queue flooding by a compromised `api` process or a bug in scan-creation logic | Bounded queues, per-scope concurrency caps (`P2-16`/`P2-17`); `OPS-02` queue-depth/age metrics make this observable before it becomes an outage                                                                                                                                        | `P2-16`, `P2-17`, `OPS-02` |
 | Repudiation       | A scan result is disputed as never having actually run                        | `scan_run_targets`/`observations` are the durable record independent of the queue itself — the queue is transport, not the system of record (`4.4`: "all pipeline state lives in the queue and database, never only in memory," meaning the database, not the queue, is authoritative) | `P2-14`                    |
+
+## Deployment note: `MFA_ENFORCEMENT` (SEC-09)
+
+`SEC-09` requires TOTP to be mandatory for operator and administrator, and
+`MFA_ENFORCEMENT=mandatory` is the shipped default. A deployment may set
+`MFA_ENFORCEMENT=optional`, which **removes the enrolment gate** — a
+privileged account can then use the appliance without ever enrolling a
+second factor.
+
+This is recorded here rather than left in a configuration file because it
+changes the threat model materially. Under `optional`:
+
+- A stolen or phished password is sufficient to reach the full panel for any
+  account that has not voluntarily enrolled. The mitigation in the Spoofing
+  row above reduces to session hardening plus `SEC-11` rate limiting and
+  lockout.
+- The blast radius is still bounded by `PRIN-01`–`PRIN-03`: the appliance
+  holds no customer credentials and cannot write to customer systems, so the
+  realistic worst case remains disclosure of the customer's vulnerability
+  inventory — a target list, not a foothold. See
+  `docs/runbooks/appliance-suspected-compromised.md`.
+
+What `optional` does **not** change:
+
+- Anyone may enrol voluntarily at any time (panel → _Your account_ →
+  _Two-factor authentication_).
+- Once an account has enrolled, its TOTP challenge is required at **every**
+  login and cannot be skipped, whatever this setting says. `optional` governs
+  whether enrolment is _forced_, never whether an enrolled factor is
+  _honoured_.
+- Re-enrolment from a live session is still refused (`409
+auth.mfa_already_enrolled`), so a stolen session cannot displace the real
+  owner's authenticator.
+
+The API logs a prominent warning naming `SEC-09` on every start while this is
+set, so the weakened control is visible in operational logs rather than
+discoverable only by reading `.env`. **Return this to `mandatory` before a
+pilot goes live**; `GATE 5` assumes the control as specified.
 
 ## Known gaps in this draft
 

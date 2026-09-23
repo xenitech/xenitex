@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { test } from 'node:test';
+import { describe, it, test } from 'node:test';
 import {
   computeAssetRiskRating,
   computeRiskScore,
@@ -134,7 +134,7 @@ test('SCORE 2.3: risk band boundaries are inclusive at the stated floor', () => 
   assert.equal(riskBand(0), 'informational');
 });
 
-test('confidenceTierFromScore boundaries match confidenceLabel(low/medium/high)\'s existing 0.4/0.75 thresholds', () => {
+test("confidenceTierFromScore boundaries match confidenceLabel(low/medium/high)'s existing 0.4/0.75 thresholds", () => {
   assert.equal(confidenceTierFromScore(unitInterval(0.75)), 'verified');
   assert.equal(confidenceTierFromScore(unitInterval(0.74)), 'corroborated');
   assert.equal(confidenceTierFromScore(unitInterval(0.4)), 'corroborated');
@@ -186,4 +186,49 @@ test('an asset with no open issues rates informational, not an error', () => {
   assert.equal(result.rating, 0);
   assert.equal(result.band, 'informational');
   assert.equal(result.maxRiskIssueId, null);
+});
+
+describe('risk scoring policy robustness', () => {
+  const factors = {
+    normalisedCvssBaseScore: 9.8,
+    cvssVersionUsed: '3.1',
+    knownExploited: false,
+    exploitProbability: null,
+    exposureClassification: 'external',
+    assetCriticality: 'high',
+    confidenceTier: 'verified',
+  } as const;
+
+  // Regression: these weights arrive as a parsed jsonb blob, so a key can
+  // simply be absent. `undefined` used to flow straight into `running *= …`
+  // and write NaN to issues.risk_score — every ranking in the product
+  // silently meaningless, with nothing logged.
+  it('refuses to score against a policy missing a weight rather than producing NaN', () => {
+    const policy = {
+      version: 99,
+      isActive: true,
+      createdAt: '2026-01-01T00:00:00Z' as never,
+      weights: {
+        ...DEFAULT_RISK_SCORING_WEIGHTS,
+        exposure: { dmz: 1.15, internal: 1.0, isolated: 0.8, unknown: 1.0 } as never,
+      },
+    };
+    assert.throws(() => computeRiskScore(factors, policy), /no usable 'exposure' weight/);
+  });
+
+  // Regression: riskBand's linear scan is only correct highest-first, and
+  // configured bands come out of JSON with no ordering guarantee. Given an
+  // ascending list it returned 'informational' for every score.
+  it('bands correctly regardless of the order the configured bands arrive in', () => {
+    const ascending = [
+      { band: 'informational' as const, minScore: 0 },
+      { band: 'low' as const, minScore: 15 },
+      { band: 'medium' as const, minScore: 40 },
+      { band: 'high' as const, minScore: 70 },
+      { band: 'critical' as const, minScore: 90 },
+    ];
+    assert.equal(riskBand(95, ascending), 'critical');
+    assert.equal(riskBand(72, ascending), 'high');
+    assert.equal(riskBand(5, ascending), 'informational');
+  });
 });

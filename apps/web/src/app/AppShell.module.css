@@ -92,3 +92,8 @@
 .main:focus-visible {
   outline: none;
 }
+
+.userBadge {
+  color: var(--color-risk-medium);
+  font-size: var(--font-size-xs);
+}

@@ -127,7 +127,9 @@ export function IntelligenceTab() {
               </strong>
               <span className={styles.muted}>
                 {new Date(imp.importedAt).toLocaleString()} ·{' '}
-                {t(`admin.intel.status.${imp.status as 'validating' | 'applied' | 'failed' | 'superseded'}`)}
+                {t(
+                  `admin.intel.status.${imp.status as 'validating' | 'applied' | 'failed' | 'superseded'}`,
+                )}
                 {imp.status === 'applied' &&
                   ` · +${imp.added ?? 0} / ~${imp.modified ?? 0} / ⌀${imp.discarded ?? 0}`}
                 {imp.failureReason &&

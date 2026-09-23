@@ -12,7 +12,8 @@ export function useIntelStatusQuery() {
     // A running sync updates fetched/added/etc only once it completes (no
     // per-page progress yet — see UI-107's JobProgress note in the tab
     // component) — a short poll is the honest way to reflect that.
-    refetchInterval: (query) => (query.state.data?.lastSyncAttempt?.status === 'validating' ? 4000 : false),
+    refetchInterval: (query) =>
+      query.state.data?.lastSyncAttempt?.status === 'validating' ? 4000 : false,
   });
 }
 
@@ -21,7 +22,9 @@ export function useIntelImportsQuery() {
     queryKey: ['intel-imports'],
     queryFn: async ({ pageParam }: { pageParam: string | undefined }) =>
       unwrap(
-        await apiClient.GET('/intel/imports', { params: { query: compact({ cursor: pageParam, limit: 20 }) } }),
+        await apiClient.GET('/intel/imports', {
+          params: { query: compact({ cursor: pageParam, limit: 20 }) },
+        }),
       ),
     initialPageParam: undefined as string | undefined,
     getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,

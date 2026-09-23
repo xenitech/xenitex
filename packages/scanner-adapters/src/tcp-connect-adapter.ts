@@ -35,13 +35,74 @@ import type {
  * exactly what any ordinary client of that protocol does — nothing here
  * authenticates, brute-forces, or sends a payload beyond that.
  */
-const SAFE_PORTS = [21, 22, 23, 25, 53, 80, 110, 111, 135, 139, 143, 443, 445, 993, 995, 1723, 3306, 3389, 5432, 5900, 6379, 8080, 8443];
+const SAFE_PORTS = [
+  21, 22, 23, 25, 53, 80, 110, 111, 135, 139, 143, 443, 445, 993, 995, 1723, 3306, 3389, 5432, 5900,
+  6379, 8080, 8443,
+];
 const STANDARD_PORTS = [
   ...SAFE_PORTS,
-  20, 69, 79, 88, 113, 119, 123, 137, 138, 161, 162, 179, 389, 427, 465, 514, 515, 587, 631, 636,
-  873, 902, 989, 990, 1025, 1080, 1433, 1521, 2049, 2121, 2375, 3000, 3128, 4444, 5000, 5060, 5061,
-  5601, 5672, 5900, 5985, 5986, 6000, 6666, 6667, 7001, 8000, 8008, 8081, 8088, 8161, 8888, 9000,
-  9042, 9090, 9092, 9200, 9300, 11211, 27017, 27018, 50000,
+  20,
+  69,
+  79,
+  88,
+  113,
+  119,
+  123,
+  137,
+  138,
+  161,
+  162,
+  179,
+  389,
+  427,
+  465,
+  514,
+  515,
+  587,
+  631,
+  636,
+  873,
+  902,
+  989,
+  990,
+  1025,
+  1080,
+  1433,
+  1521,
+  2049,
+  2121,
+  2375,
+  3000,
+  3128,
+  4444,
+  5000,
+  5060,
+  5061,
+  5601,
+  5672,
+  5900,
+  5985,
+  5986,
+  6000,
+  6666,
+  6667,
+  7001,
+  8000,
+  8008,
+  8081,
+  8088,
+  8161,
+  8888,
+  9000,
+  9042,
+  9090,
+  9092,
+  9200,
+  9300,
+  11211,
+  27017,
+  27018,
+  50000,
 ];
 const PORTS_BY_INTRUSIVENESS = {
   'passive-inventory': [80],
@@ -50,10 +111,29 @@ const PORTS_BY_INTRUSIVENESS = {
 } as const;
 
 const PORT_SERVICE_NAMES: Record<number, string> = {
-  21: 'ftp', 22: 'ssh', 23: 'telnet', 25: 'smtp', 53: 'domain', 80: 'http', 110: 'pop3',
-  111: 'rpcbind', 135: 'msrpc', 139: 'netbios-ssn', 143: 'imap', 443: 'https', 445: 'microsoft-ds',
-  993: 'imaps', 995: 'pop3s', 1723: 'pptp', 3306: 'mysql', 3389: 'ms-wbt-server', 5432: 'postgresql',
-  5900: 'vnc', 6379: 'redis', 8080: 'http-proxy', 8443: 'https-alt',
+  21: 'ftp',
+  22: 'ssh',
+  23: 'telnet',
+  25: 'smtp',
+  53: 'domain',
+  80: 'http',
+  110: 'pop3',
+  111: 'rpcbind',
+  135: 'msrpc',
+  139: 'netbios-ssn',
+  143: 'imap',
+  443: 'https',
+  445: 'microsoft-ds',
+  993: 'imaps',
+  995: 'pop3s',
+  1723: 'pptp',
+  3306: 'mysql',
+  3389: 'ms-wbt-server',
+  5432: 'postgresql',
+  5900: 'vnc',
+  6379: 'redis',
+  8080: 'http-proxy',
+  8443: 'https-alt',
 };
 
 /** Sending a plaintext HEAD request only makes sense on plaintext-HTTP-shaped ports — never on a TLS port (443/8443), where nothing would understand it. */
@@ -114,18 +194,65 @@ function probePort(host: string, port: number): Promise<PortProbeResult> {
   });
 }
 
+/**
+ * SAFE-04's `packetsPerSecond` ceiling, actually applied. A token bucket
+ * rather than a fixed sleep: it lets a burst through up to the per-second
+ * budget and then paces, which matches how the ceiling is described
+ * ("packets per second") instead of serialising every probe behind a fixed
+ * delay.
+ *
+ * This existed nowhere before. `pacing.packetsPerSecond` was read out of
+ * the profile, validated at plan time, displayed in the pre-flight preview
+ * — and then never consulted again, so the only thing actually limiting
+ * how hard the appliance hit a customer network was the concurrency cap.
+ * On a fragile device that is the difference between a safe scan and an
+ * outage, and SAFE-04 is explicit that the ceiling binds server-side
+ * regardless of what was requested.
+ */
+class PacketRateLimiter {
+  private tokens: number;
+  private lastRefill = Date.now();
+
+  constructor(private readonly packetsPerSecond: number) {
+    this.tokens = packetsPerSecond;
+  }
+
+  async take(): Promise<void> {
+    if (!Number.isFinite(this.packetsPerSecond) || this.packetsPerSecond <= 0) return;
+    for (;;) {
+      const now = Date.now();
+      this.tokens = Math.min(
+        this.packetsPerSecond,
+        this.tokens + ((now - this.lastRefill) / 1000) * this.packetsPerSecond,
+      );
+      this.lastRefill = now;
+      if (this.tokens >= 1) {
+        this.tokens -= 1;
+        return;
+      }
+      const waitMs = Math.ceil(((1 - this.tokens) / this.packetsPerSecond) * 1000);
+      await new Promise((resolve) => setTimeout(resolve, Math.max(1, waitMs)));
+    }
+  }
+}
+
 async function mapWithConcurrency<T, R>(
   items: readonly T[],
   limit: number,
-  fn: (item: T) => Promise<R>,
+  fn: (item: T, index: number) => Promise<R>,
+  options: { readonly shouldStop?: () => boolean } = {},
 ): Promise<R[]> {
   const results: R[] = new Array(items.length);
   let cursor = 0;
   const worker = async (): Promise<void> => {
     for (;;) {
+      // P2-03's job timeout, checked between probes: an in-flight connect
+      // is bounded by CONNECT_TIMEOUT_MS anyway, so stopping here bounds
+      // the whole batch without abandoning a socket mid-handshake.
+      if (options.shouldStop?.()) return;
       const index = cursor++;
       if (index >= items.length) return;
-      results[index] = await fn(items[index]!);
+      results[index] = await fn(items[index]!, index);
     }
   };
   await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
@@ -148,7 +275,8 @@ interface ParsedBanner {
 /** Structured extraction only (SEC-17/P2-04/P2-05) — every returned field is later wrapped Untrusted<T> before it leaves parse(), never rendered or logged raw. */
 function parseBanner(port: number, bannerBase64: string | null): ParsedBanner {
   const serviceNameGuess = PORT_SERVICE_NAMES[port] ?? null;
-  if (!bannerBase64) return { serviceName: serviceNameGuess, product: null, version: null, extraInfo: null };
+  if (!bannerBase64)
+    return { serviceName: serviceNameGuess, product: null, version: null, extraInfo: null };
   const text = Buffer.from(bannerBase64, 'base64').toString('utf8');
   const firstLine = (text.split(/\r?\n/)[0] ?? '').trim().slice(0, 300);
 
@@ -169,16 +297,28 @@ function parseBanner(port: number, bannerBase64: string | null): ParsedBanner {
 
   const ircd = /UnrealIRCd[- ]?v?([\w.]+)?/i.exec(text);
   if (ircd) {
-    return { serviceName: 'irc', product: 'UnrealIRCd', version: ircd[1] ?? null, extraInfo: firstLine };
+    return {
+      serviceName: 'irc',
+      product: 'UnrealIRCd',
+      version: ircd[1] ?? null,
+      extraInfo: firstLine,
+    };
   }
 
-  return { serviceName: serviceNameGuess, product: null, version: null, extraInfo: firstLine || null };
+  return {
+    serviceName: serviceNameGuess,
+    product: null,
+    version: null,
+    extraInfo: firstLine || null,
+  };
 }
 
 interface HostProbeResult {
   readonly address: string;
   readonly up: boolean;
   readonly ports: readonly PortProbeResult[];
+  /** false when the job timeout cut this host's port sweep short (P2-03). */
+  readonly complete?: boolean;
 }
 
 export class TcpConnectDiscoveryAdapter implements ScannerAdapter {
@@ -206,7 +346,9 @@ export class TcpConnectDiscoveryAdapter implements ScannerAdapter {
     return {
       targetCount: 0, // filled in by the caller from the expanded scope, not known here
       estimatedPacketVolume: ports * 2, // one SYN+ACK/RST round trip per port, roughly
-      estimatedDurationSeconds: Math.ceil((ports * (CONNECT_TIMEOUT_MS + BANNER_WAIT_MS)) / 1000 / 8),
+      estimatedDurationSeconds: Math.ceil(
+        (ports * (CONNECT_TIMEOUT_MS + BANNER_WAIT_MS)) / 1000 / 8,
+      ),
     };
   }
 
@@ -228,24 +370,50 @@ export class TcpConnectDiscoveryAdapter implements ScannerAdapter {
       1,
       Math.min(context.pacing.concurrentHosts * context.pacing.concurrentPortsPerHost, 200),
     );
-    const flatResults = await mapWithConcurrency(jobs, concurrency, async ({ address, port }) => ({
-      address,
-      result: await probePort(address, port),
-    }));
+    const rateLimiter = new PacketRateLimiter(context.pacing.packetsPerSecond);
+    const deadline = Date.now() + context.jobTimeoutMs;
+    const timedOut = () => Date.now() >= deadline;
+
+    const flatResults = await mapWithConcurrency(
+      jobs,
+      concurrency,
+      async ({ address, port }) => {
+        await rateLimiter.take();
+        return { address, result: await probePort(address, port) };
+      },
+      { shouldStop: timedOut },
+    );
 
     const byAddress = new Map<string, PortProbeResult[]>();
-    for (const { address, result } of flatResults) {
-      if (!byAddress.has(address)) byAddress.set(address, []);
-      byAddress.get(address)!.push(result);
+    for (const entry of flatResults) {
+      // A timed-out batch leaves trailing slots unfilled (mapWithConcurrency
+      // pre-sizes its result array), so skip the holes rather than
+      // destructuring `undefined`.
+      if (!entry) continue;
+      if (!byAddress.has(entry.address)) byAddress.set(entry.address, []);
+      byAddress.get(entry.address)!.push(entry.result);
     }
+    const expectedPortCount = ports.length;
     const hostResults: HostProbeResult[] = targets.map((address) => {
       const ps = byAddress.get(address) ?? [];
-      return { address, up: ps.some((p) => p.outcome !== 'unreachable'), ports: ps };
+      return {
+        address,
+        up: ps.some((p) => p.outcome !== 'unreachable'),
+        ports: ps,
+        // P2-03: a host whose port sweep was cut short by the job timeout
+        // is reported as a partial result, not quietly as a clean sweep
+        // that happened to find nothing.
+        complete: ps.length === expectedPortCount,
+      };
     });
 
     const artifactBytes = Buffer.from(JSON.stringify({ hosts: hostResults }), 'utf8');
     const blobStoreKey = `raw-artifacts/${context.scanRunId}/${newId()}.json`;
-    const { sha256, sizeBytes } = await this.blobStore.put(blobStoreKey, artifactBytes, 'application/json');
+    const { sha256, sizeBytes } = await this.blobStore.put(
+      blobStoreKey,
+      artifactBytes,
+      'application/json',
+    );
     const rawArtifact: RawArtifact = {
       id: newId() as RawArtifact['id'],
       scanRunId: context.scanRunId as RawArtifact['scanRunId'],
@@ -258,6 +426,24 @@ export class TcpConnectDiscoveryAdapter implements ScannerAdapter {
     };
 
     for (const host of hostResults) {
+      if (host.complete === false) {
+        // P2-02/P2-03: adapter failure is a first-class outcome — the
+        // partial artifact is retained and the failure is classified,
+        // rather than the caller recording a truncated sweep as a
+        // successful one.
+        onProgress({
+          kind: 'target_failed',
+          target: host.address,
+          failureClass: 'job_timeout',
+        });
+        yield {
+          status: 'failed',
+          target: host.address,
+          failureClass: 'job_timeout',
+          partialArtifact: rawArtifact,
+        };
+        continue;
+      }
       onProgress({ kind: 'target_completed', target: host.address });
       yield { status: 'completed', target: host.address, rawArtifact };
     }

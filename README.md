@@ -222,6 +222,7 @@ and real `cisaExploitAdd`-derived known-exploited flags landing in
 `vulnerabilities`.
 
 Known, deliberate gaps against the full spec — not silently dropped:
+
 - `FEED-08.2` (CISA KEV direct fetch) is **not implemented**: `cisa.gov`
   returned a `403` from this development network's edge (Akamai bot
   protection), so it could not be built against real traffic. NVD's own

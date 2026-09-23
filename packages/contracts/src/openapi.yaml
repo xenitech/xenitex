@@ -1379,7 +1379,9 @@ paths:
         '409':
           description: This scope has already been superseded by a later declaration.
           content:
-            { application/problem+json: { schema: { $ref: '#/components/schemas/ProblemDetails' } } }
+            {
+              application/problem+json: { schema: { $ref: '#/components/schemas/ProblemDetails' } },
+            }
 
   # ------------------------------------------------------------ ExclusionRules
   /exclusion-rules:
@@ -2406,7 +2408,9 @@ paths:
         '409':
           description: Online updates are permanently disabled for this deployment (FEED-23).
           content:
-            { application/problem+json: { schema: { $ref: '#/components/schemas/ProblemDetails' } } }
+            {
+              application/problem+json: { schema: { $ref: '#/components/schemas/ProblemDetails' } },
+            }
   /intel/settings:
     get:
       tags: [Intelligence]
@@ -3673,7 +3677,8 @@ components:
       required: [onlineUpdatesDisabled, totalVulnerabilities, knownExploitedCount]
       properties:
         onlineUpdatesDisabled: { type: boolean }
-        activeCorpusImport: { oneOf: [{ $ref: '#/components/schemas/IntelImport' }, { type: 'null' }] }
+        activeCorpusImport:
+          { oneOf: [{ $ref: '#/components/schemas/IntelImport' }, { type: 'null' }] }
         lastSyncAttempt: { oneOf: [{ $ref: '#/components/schemas/IntelImport' }, { type: 'null' }] }
         totalVulnerabilities: { type: integer }
         knownExploitedCount: { type: integer }

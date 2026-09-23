@@ -1,0 +1,18 @@
+# Generated artifacts. These are produced byte-for-byte by their generator
+# and verified against it (packages/contracts/scripts/verify-generated.mjs
+# diffs the committed file against a fresh regeneration, per P1-02) — so
+# Prettier must not rewrite them, or `pnpm build` and `pnpm format` end up
+# demanding two different files and CI can never be green with both.
+packages/contracts/src/generated/
+
+# Written by pnpm, read by pnpm. Reformatting it gains nothing and risks a
+# `--frozen-lockfile` mismatch in CI for a purely cosmetic reason.
+pnpm-lock.yaml
+
+# Build output and caches.
+**/dist/
+**/.turbo/
+storybook-static/
+playwright-report/
+test-results/
+sbom/

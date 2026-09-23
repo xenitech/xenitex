@@ -58,13 +58,13 @@ risk_score  = clamp(base × exploit × exposure × criticality × confidence, 0,
 
 ## 2.3 Risk bands
 
-| Band | Score | Default SLA |
-|---|---|---|
-| Critical | 90–100 | 7 days |
-| High | 70–89 | 30 days |
-| Medium | 40–69 | 90 days |
-| Low | 15–39 | 180 days |
-| Informational | 0–14 | none |
+| Band          | Score  | Default SLA |
+| ------------- | ------ | ----------- |
+| Critical      | 90–100 | 7 days      |
+| High          | 70–89  | 30 days     |
+| Medium        | 40–69  | 90 days     |
+| Low           | 15–39  | 180 days    |
+| Informational | 0–14   | none        |
 
 - `SCORE-05` Band thresholds and SLA durations are configurable per organisation, and the SLA matrix may additionally vary by asset criticality per `MOD-14`.
 
@@ -93,18 +93,18 @@ Archetype A, list-detail split.
 
 Default visible, in order:
 
-| Column | Content | Width | Notes |
-|---|---|---|---|
-| Risk | `RiskBadge` — ordinal bar, score, band | 96px | The only saturated element in the row. `UI-02` |
-| Issue | Title; CVE identifier below in monospace when present | flex | Group rows show product and version here |
-| Asset | Hostname, address below in muted ink | 200px | Links to asset detail |
-| Service | `service:port/proto` in monospace | 140px | |
-| CVSS | Score with a version chip: `9.8 v3.1`, `10.0 v2` | 96px | Tabular figures. `MATCH-15` |
-| KEV | Marker plus remediation due date on hover | 56px | Absent when not applicable, never a grey placeholder |
-| EPSS | Percentage with one decimal | 72px | |
-| Conf. | `ConfidenceMeter` | 80px | No colour. `UI-03` |
-| State | `StateChip` | 96px | |
-| SLA | Days remaining, or overdue count | 88px | |
+| Column  | Content                                               | Width | Notes                                                |
+| ------- | ----------------------------------------------------- | ----- | ---------------------------------------------------- |
+| Risk    | `RiskBadge` — ordinal bar, score, band                | 96px  | The only saturated element in the row. `UI-02`       |
+| Issue   | Title; CVE identifier below in monospace when present | flex  | Group rows show product and version here             |
+| Asset   | Hostname, address below in muted ink                  | 200px | Links to asset detail                                |
+| Service | `service:port/proto` in monospace                     | 140px |                                                      |
+| CVSS    | Score with a version chip: `9.8 v3.1`, `10.0 v2`      | 96px  | Tabular figures. `MATCH-15`                          |
+| KEV     | Marker plus remediation due date on hover             | 56px  | Absent when not applicable, never a grey placeholder |
+| EPSS    | Percentage with one decimal                           | 72px  |                                                      |
+| Conf.   | `ConfidenceMeter`                                     | 80px  | No colour. `UI-03`                                   |
+| State   | `StateChip`                                           | 96px  |                                                      |
+| SLA     | Days remaining, or overdue count                      | 88px  |                                                      |
 
 Available but hidden by default: age, first seen, last seen, owner, scanner and adapter version, CWE, CPE, scan run.
 

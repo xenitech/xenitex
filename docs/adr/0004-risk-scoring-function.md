@@ -142,7 +142,7 @@ version of the same intent this ADR already argued for (`MOD-16`): worked
 by hand against this ADR's own worked example (Log4Shell: CVSS 10.0,
 known-exploited, EPSS 0.94, exposure external, criticality high,
 confidence 0.94) both functions land in the mid-90s to 100 — the visible
-difference is at the *other* end. Take the same known-exploited status on
+difference is at the _other_ end. Take the same known-exploited status on
 a genuinely low-severity finding (CVSS 2.0, internal, medium criticality):
 the old formula's flat `+30` for known-exploited alone pushed the total
 into the high-60s regardless of how minor the underlying CVE was; the new

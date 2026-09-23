@@ -10,10 +10,19 @@ import { Stack } from '../components/layout/Stack.js';
 import { useSession } from './SessionContext.js';
 import styles from './AuthScreens.module.css';
 
-/** SEC-09: mandatory TOTP enrolment for operator/administrator before the app is reachable. */
-export function MfaEnrollScreen() {
+/**
+ * The TOTP enrolment flow itself, rendered in two places:
+ *
+ *  - `MfaEnrollScreen`, the hard gate a privileged account hits before the
+ *    app is reachable, when the appliance is configured with
+ *    MFA_ENFORCEMENT=mandatory (SEC-09, the shipped default).
+ *  - `AccountPage`, where anyone may enrol voluntarily at any time.
+ *
+ * `onDone` is what differs: the gate re-reads the session so the app can
+ * finally mount, whereas the account page just closes the panel.
+ */
+export function MfaEnrollFlow({ onDone }: { readonly onDone: () => void }) {
   const { t } = useTranslation();
-  const { invalidate } = useSession();
   const [code, setCode] = useState('');
   const [recoveryCodes, setRecoveryCodes] = useState<readonly string[] | undefined>(undefined);
   const [acknowledgedRecovery, setAcknowledgedRecovery] = useState(false);
@@ -71,11 +80,7 @@ export function MfaEnrollScreen() {
             />{' '}
             {t('auth.enroll.recoveryAcknowledge')}
           </label>
-          <Button
-            variant="primary"
-            disabled={!acknowledgedRecovery}
-            onClick={() => void invalidate()}
-          >
+          <Button variant="primary" disabled={!acknowledgedRecovery} onClick={onDone}>
             {t('common.next')}
           </Button>
         </Stack>
@@ -117,4 +122,12 @@ export function MfaEnrollScreen() {
       </form>
     </div>
   );
+}
+
+/** SEC-09's hard gate: shown instead of the app until a privileged account enrols. */
+export function MfaEnrollScreen() {
+  const { invalidate } = useSession();
+  // Re-reading the session is what lets AuthGate's check pass and the app
+  // mount — the server reports `mfaEnabled: true` once enrolment completes.
+  return <MfaEnrollFlow onDone={() => void invalidate()} />;
 }

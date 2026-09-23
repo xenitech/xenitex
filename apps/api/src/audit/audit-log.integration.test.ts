@@ -110,3 +110,82 @@ test(
     assert.ok(afterTamper.hashMismatches.some((m) => String(m.id) === String(latest.id)));
   },
 );
+
+/**
+ * DATA-02 regression. The chain hash was computed over `JSON.stringify` of a
+ * JavaScript object, which serialises keys in INSERTION order, but the values
+ * are read back for verification out of `jsonb` columns — and Postgres `jsonb`
+ * normalises key order (by key length, then bytewise). Any entry recording two
+ * or more fields of before/after state therefore hashed one way on write and a
+ * different way on read, and the verifier reported the untouched row as
+ * TAMPERED.
+ *
+ * That is the worst failure mode a tamper-evidence control can have: it cried
+ * wolf on roughly a quarter of real entries, so an operator following
+ * docs/runbooks/appliance-suspected-compromised.md could not distinguish a
+ * genuine alteration from the control's own noise. WORK-07 ranks this third in
+ * what must never be cut; a control that cannot be believed is already cut.
+ *
+ * The keys below are chosen so that jsonb WILL reorder them — `template` (8
+ * chars) sorts after `formats` (7) under jsonb's length-first rule, and
+ * `alpha`/`mid`/`zeta` exercise the bytewise tiebreak — so this test fails
+ * against the pre-fix implementation.
+ */
+test(
+  'DATA-02: an entry whose state carries several keys survives the jsonb round trip',
+  { skip: !process.env.DATABASE_URL },
+  async () => {
+    const baseline = await verifyAuditChain(db);
+
+    for (let i = 0; i < 3; i++) {
+      await appendAuditEntry(db, {
+        actorUserId: null,
+        sessionId: null,
+        sourceAddress: '127.0.0.1',
+        action: 'test.multi_key_canonicalisation',
+        targetType: 'report',
+        targetId: `${randomUUID()}`,
+        beforeState: {
+          template: 'before',
+          formats: ['html', 'csv'],
+          zeta: 1,
+          alpha: 2,
+          mid: { b: 1, a: 2 },
+          // A real Date, not an ISO string. Audit entries routinely record
+          // before-state read straight out of a SELECT, so timestamp
+          // columns arrive here as Date objects. `Object.entries(date)` is
+          // empty, so a naive recursive canonicaliser serialised them as
+          // `{}` while node-postgres wrote the ISO string into jsonb —
+          // another write/read disagreement, caught on a real
+          // `organization_settings.updated` entry.
+          capturedAt: new Date('2026-09-15T07:43:46.913Z'),
+          nested: { at: new Date('2026-01-02T03:04:05.006Z') },
+        },
+        afterState: {
+          template: 'after',
+          formats: ['json'],
+          zeta: 3,
+          alpha: 4,
+          mid: { b: 5, a: 6 },
+        },
+        outcome: 'success',
+      });
+    }
+
+    const after = await verifyAuditChain(db);
+    assert.equal(
+      after.hashMismatches.length,
+      baseline.hashMismatches.length,
+      'appending multi-key state must not introduce a single new mismatch',
+    );
+    assert.equal(
+      after.legacyUnverifiable.length,
+      baseline.legacyUnverifiable.length,
+      'newly written entries are chain_version 2 and must be fully verifiable',
+    );
+    assert.ok(
+      after.verifiedUpToId > baseline.verifiedUpToId,
+      'the new entries must be positively verified, not merely not-failed',
+    );
+  },
+);

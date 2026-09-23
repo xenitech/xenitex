@@ -17,9 +17,24 @@ export const Log4ShellBreakdown: Story = {
     scoringPolicyVersion: 2,
     factors: [
       { factor: 'cvssBaseScore', inputDescription: '10.0 (3.1)', multiplier: 1, runningScore: 100 },
-      { factor: 'knownExploited', inputDescription: 'known-exploited', multiplier: 1.5, runningScore: 150 },
-      { factor: 'exposureClassification', inputDescription: 'external', multiplier: 1.3, runningScore: 195 },
-      { factor: 'assetCriticality', inputDescription: 'high', multiplier: 1.1, runningScore: 214.5 },
+      {
+        factor: 'knownExploited',
+        inputDescription: 'known-exploited',
+        multiplier: 1.5,
+        runningScore: 150,
+      },
+      {
+        factor: 'exposureClassification',
+        inputDescription: 'external',
+        multiplier: 1.3,
+        runningScore: 195,
+      },
+      {
+        factor: 'assetCriticality',
+        inputDescription: 'high',
+        multiplier: 1.1,
+        runningScore: 214.5,
+      },
       { factor: 'confidence', inputDescription: 'verified', multiplier: 1.0, runningScore: 100 },
     ],
   },

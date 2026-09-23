@@ -191,6 +191,10 @@ export interface AuditEntries {
   after_state: Json | null;
   before_state: Json | null;
   canonical_payload: Json;
+  /**
+   * Canonicalisation rule used to compute entry_hash. 1 = insertion-order JSON (not verifiable after a jsonb round trip; see migration 0013). 2 = recursively key-sorted JSON.
+   */
+  chain_version: Generated<number>;
   entry_hash: string;
   id: Generated<Int8>;
   occurred_at: Generated<Timestamp>;
@@ -672,6 +676,17 @@ export interface Vulnerabilities {
   vuln_identifier: string;
 }
 
+export interface VulnerabilityCpes {
+  cpe: string;
+  cpe_version: Generated<string>;
+  id: string;
+  part: string;
+  product: string;
+  vendor: string;
+  version_range: string | null;
+  vulnerability_id: string;
+}
+
 export interface VulnerabilityDataImports {
   bundle_signature: string | null;
   content_sha256: string | null;
@@ -736,5 +751,6 @@ export interface DB {
   users: Users;
   verification_scans: VerificationScans;
   vulnerabilities: Vulnerabilities;
+  vulnerability_cpes: VulnerabilityCpes;
   vulnerability_data_imports: VulnerabilityDataImports;
 }

@@ -63,9 +63,18 @@ export function AppShell() {
             {theme === 'dark' ? t('common.themeLight') : t('common.themeDark')}
           </button>
           {currentUser && (
-            <span className={styles.user}>
+            <NavLink to="/account" className={styles.user ?? ''} title={t('account.title')}>
               {currentUser.user.displayName} · {t(`common.roles.${currentUser.user.role}`)}
-            </span>
+              {/* A quiet nudge, not a nag: shown only while this account has
+                  no second factor, so the option is discoverable without a
+                  banner every user learns to ignore. */}
+              {!currentUser.user.mfaEnabled && (
+                <span className={styles.userBadge} aria-label={t('account.mfa.notEnabled')}>
+                  {' '}
+                  · {t('account.mfa.notEnabled')}
+                </span>
+              )}
+            </NavLink>
           )}
           <button type="button" onClick={() => logout.mutate()}>
             {t('nav.signOut')}

@@ -1,5 +1,4 @@
 import type { FastifyInstance } from 'fastify';
-import { createHash } from 'node:crypto';
 import { newId } from '@xenitex/domain';
 import type { ApiDependencies } from '../dependencies.js';
 import { appendAuditEntry } from '../audit/audit-log.js';
@@ -8,16 +7,13 @@ import { requireRole } from '../auth/capabilities.js';
 import { problem, requireSession, sourceAddressOf } from './auth.js';
 import { encodeCursor, decodeCursor, parseLimit } from '../lib/pagination.js';
 import { getIdempotentResponse, storeIdempotentResponse } from '../lib/idempotency.js';
+import { etagFor } from '../lib/etag.js';
 
 // size_bytes is bigint -> Kysely's Int8 (string-typed for precision
 // safety); the contract requires a real integer or null. A backup archive
 // is nowhere near Number.MAX_SAFE_INTEGER, so this conversion is safe.
 function toNullableNumber(value: string | number | null): number | null {
   return value === null ? null : Number(value);
-}
-
-function etagFor(value: unknown): string {
-  return `"${createHash('sha256').update(JSON.stringify(value)).digest('hex').slice(0, 32)}"`;
 }
 
 async function requireAdministrator(db: ApiDependencies['db'], userId: string): Promise<boolean> {
@@ -108,29 +104,53 @@ export async function registerOpsRoutes(
     }
     const body = request.body as { reason?: string } | undefined;
 
-    const haltedRuns = await db
-      .updateTable('scan_runs')
-      .set({
-        status: 'aborted',
-        aborted_by_user_id: currentUser.userId,
-        aborted_reason: body?.reason ?? 'Global stop invoked',
-      })
-      .where('status', 'in', ['queued', 'running', 'paused'])
-      .returning('id')
-      .execute();
-    const haltedIds = haltedRuns.map((r) => r.id);
+    // One transaction: a stop that aborted the runs but then failed before
+    // recording the event would leave an unexplained mass abort in the
+    // history with nobody's name on it.
+    const { haltedIds, disabledScheduleIds, eventId } = await db
+      .transaction()
+      .execute(async (trx) => {
+        const haltedRuns = await trx
+          .updateTable('scan_runs')
+          .set({
+            status: 'aborted',
+            aborted_by_user_id: currentUser.userId,
+            aborted_reason: body?.reason ?? 'Global stop invoked',
+          })
+          .where('status', 'in', ['queued', 'running', 'paused'])
+          .returning('id')
+          .execute();
 
-    const eventId = newId();
-    await db
-      .insertInto('global_stop_events')
-      .values({
-        id: eventId,
-        invoked_by_user_id: currentUser.userId,
-        invoked_via: 'web',
-        reason: body?.reason ?? null,
-        scan_runs_halted: haltedIds,
-      })
-      .execute();
+        // SAFE-07 requires halting "all queued and running scan activity".
+        // Aborting the current runs alone is not that: a schedule firing a
+        // minute later starts a new one, and the operator who just hit the
+        // emergency stop watches scanning restart by itself. Schedules are
+        // disabled, not deleted, and are re-enabled deliberately.
+        const disabledSchedules = await trx
+          .updateTable('scan_schedules')
+          .set({ is_enabled: false })
+          .where('is_enabled', '=', true)
+          .returning('id')
+          .execute();
+
+        const id = newId();
+        await trx
+          .insertInto('global_stop_events')
+          .values({
+            id,
+            invoked_by_user_id: currentUser.userId,
+            invoked_via: 'web',
+            reason: body?.reason ?? null,
+            scan_runs_halted: haltedRuns.map((r) => r.id),
+          })
+          .execute();
+
+        return {
+          haltedIds: haltedRuns.map((r) => r.id),
+          disabledScheduleIds: disabledSchedules.map((r) => r.id),
+          eventId: id,
+        };
+      });
     await appendAuditEntry(db, {
       actorUserId: currentUser.userId,
       sessionId: currentUser.sessionId,
@@ -139,7 +159,11 @@ export async function registerOpsRoutes(
       targetType: 'global_stop_event',
       targetId: eventId,
       beforeState: null,
-      afterState: { scanRunsHalted: haltedIds, reason: body?.reason ?? null },
+      afterState: {
+        scanRunsHalted: haltedIds,
+        schedulesDisabled: disabledScheduleIds,
+        reason: body?.reason ?? null,
+      },
       outcome: 'success',
     });
 
@@ -155,6 +179,7 @@ export async function registerOpsRoutes(
       invokedAt: event.invoked_at,
       reason: event.reason,
       scanRunsHalted: event.scan_runs_halted,
+      schedulesDisabled: disabledScheduleIds,
     });
   });
 

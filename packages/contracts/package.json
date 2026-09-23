@@ -22,5 +22,12 @@
     "openapi-typescript": "^7.13.0",
     "tsx": "^4.16.2",
     "typescript": "^5.5.4"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./openapi.yaml": "./src/openapi.yaml"
   }
 }

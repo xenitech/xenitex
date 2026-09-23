@@ -35,3 +35,15 @@
   padding: var(--space-4);
   border-bottom: 1px solid var(--color-border);
 }
+
+.downloadLink {
+  display: inline-block;
+  margin-inline-end: var(--space-3);
+  white-space: nowrap;
+}
+
+.error {
+  color: var(--color-state-failure);
+  font-size: var(--font-size-sm);
+  margin: 0;
+}

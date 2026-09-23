@@ -31,3 +31,10 @@
   font-size: var(--font-size-2xs);
   color: var(--color-ink-subtle);
 }
+
+.unavailable {
+  color: var(--color-ink-muted);
+  font-size: var(--font-size-sm);
+  font-style: italic;
+  margin: 0 0 var(--space-3);
+}

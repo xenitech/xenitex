@@ -1,15 +1,11 @@
 import type { FastifyInstance } from 'fastify';
-import { createHash } from 'node:crypto';
 import { newId } from '@xenitex/domain';
 import type { ApiDependencies } from '../dependencies.js';
 import { appendAuditEntry } from '../audit/audit-log.js';
 import { requireRole } from '../auth/capabilities.js';
 import { problem, requireSession, sourceAddressOf } from './auth.js';
 import { getIdempotentResponse, storeIdempotentResponse } from '../lib/idempotency.js';
-
-function etagFor(value: unknown): string {
-  return `"${createHash('sha256').update(JSON.stringify(value)).digest('hex').slice(0, 32)}"`;
-}
+import { etagFor } from '../lib/etag.js';
 
 async function requireOperator(db: ApiDependencies['db'], userId: string): Promise<boolean> {
   const user = await db
@@ -525,6 +521,7 @@ export async function registerSchedulingRoutes(
         cronExpression: row.cron_expression,
         timezone: row.timezone,
         nextRunAt: row.next_run_at,
+        isEnabled: row.is_enabled,
       })),
     );
   });
@@ -610,6 +607,7 @@ export async function registerSchedulingRoutes(
       cronExpression: row.cron_expression,
       timezone: row.timezone,
       nextRunAt: row.next_run_at,
+      isEnabled: row.is_enabled,
     };
     await storeIdempotentResponse(redis, 'createScanSchedule', idempotencyKey, {
       status: 201,
@@ -617,4 +615,307 @@ export async function registerSchedulingRoutes(
     });
     return reply.code(201).send(responseBody);
   });
+
+  // ------------------------------------- BlackoutWindow / ScanSchedule detail
+  // SAFE-06 and 3.6 both describe windows and schedules as managed objects,
+  // but only list-and-create existed: a window entered with the wrong hours
+  // could not be corrected or removed through the API at all, and a
+  // schedule could not be paused. Both are now editable and removable, the
+  // same way the contract has always said they were.
+
+  function toBlackoutWindow(row: {
+    id: string;
+    scope_id: string | null;
+    name: string;
+    timezone: string;
+    starts_at: Date | string;
+    ends_at: Date | string;
+    is_recurring: boolean;
+    rrule: string | null;
+  }) {
+    return {
+      id: row.id,
+      scopeId: row.scope_id,
+      name: row.name,
+      timezone: row.timezone,
+      startsAt: row.starts_at,
+      endsAt: row.ends_at,
+      isRecurring: row.is_recurring,
+      rrule: row.rrule,
+    };
+  }
+
+  app.patch(
+    '/blackout-windows/:windowId',
+    { preHandler: requireSession(deps) },
+    async (request, reply) => {
+      const currentUser = request.currentUser!;
+      if (!(await requireOperator(db, currentUser.userId))) {
+        return reply
+          .code(403)
+          .type('application/problem+json')
+          .send(problem(403, 'auth.forbidden', 'Operator role required'));
+      }
+      const { windowId } = request.params as { windowId: string };
+      const existing = await db
+        .selectFrom('blackout_windows')
+        .selectAll()
+        .where('id', '=', windowId)
+        .executeTakeFirst();
+      if (!existing) {
+        return reply
+          .code(404)
+          .type('application/problem+json')
+          .send(problem(404, 'resource.not_found', 'Blackout window not found'));
+      }
+
+      const body = request.body as {
+        name?: string;
+        startsAt?: string;
+        endsAt?: string;
+        timezone?: string;
+      };
+      const updates: Record<string, unknown> = {};
+      if (body?.name !== undefined) updates.name = body.name;
+      if (body?.timezone !== undefined) updates.timezone = body.timezone;
+      if (body?.startsAt !== undefined) updates.starts_at = new Date(body.startsAt);
+      if (body?.endsAt !== undefined) updates.ends_at = new Date(body.endsAt);
+      if (Object.keys(updates).length === 0) {
+        return reply
+          .code(400)
+          .type('application/problem+json')
+          .send(problem(400, 'validation.schema_violation', 'No updatable fields were supplied'));
+      }
+
+      // `blackout_window_valid_range` would otherwise reject this as a raw
+      // Postgres constraint violation; checked here so the operator gets a
+      // problem document naming the actual mistake.
+      const startsAt = (updates.starts_at as Date | undefined) ?? new Date(existing.starts_at);
+      const endsAt = (updates.ends_at as Date | undefined) ?? new Date(existing.ends_at);
+      if (Number.isNaN(startsAt.getTime()) || Number.isNaN(endsAt.getTime())) {
+        return reply
+          .code(400)
+          .type('application/problem+json')
+          .send(
+            problem(400, 'validation.schema_violation', 'startsAt/endsAt must be valid timestamps'),
+          );
+      }
+      if (endsAt <= startsAt) {
+        return reply
+          .code(400)
+          .type('application/problem+json')
+          .send(problem(400, 'validation.schema_violation', 'endsAt must be after startsAt'));
+      }
+
+      await db.updateTable('blackout_windows').set(updates).where('id', '=', windowId).execute();
+      await appendAuditEntry(db, {
+        actorUserId: currentUser.userId,
+        sessionId: currentUser.sessionId,
+        sourceAddress: sourceAddressOf(request),
+        action: 'blackout_window.updated',
+        targetType: 'blackout_window',
+        targetId: windowId,
+        beforeState: toBlackoutWindow(existing),
+        afterState: updates,
+        outcome: 'success',
+      });
+
+      const row = await db
+        .selectFrom('blackout_windows')
+        .selectAll()
+        .where('id', '=', windowId)
+        .executeTakeFirstOrThrow();
+      return reply.code(200).send(toBlackoutWindow(row));
+    },
+  );
+
+  app.delete(
+    '/blackout-windows/:windowId',
+    { preHandler: requireSession(deps) },
+    async (request, reply) => {
+      const currentUser = request.currentUser!;
+      if (!(await requireOperator(db, currentUser.userId))) {
+        return reply
+          .code(403)
+          .type('application/problem+json')
+          .send(problem(403, 'auth.forbidden', 'Operator role required'));
+      }
+      const { windowId } = request.params as { windowId: string };
+      const existing = await db
+        .selectFrom('blackout_windows')
+        .selectAll()
+        .where('id', '=', windowId)
+        .executeTakeFirst();
+      if (!existing) {
+        return reply
+          .code(404)
+          .type('application/problem+json')
+          .send(problem(404, 'resource.not_found', 'Blackout window not found'));
+      }
+
+      await db.deleteFrom('blackout_windows').where('id', '=', windowId).execute();
+      // SAFE-06: removing a blackout window removes a protection — it lets
+      // scans run during hours someone deliberately fenced off — so the
+      // full prior definition is recorded, not just the id.
+      await appendAuditEntry(db, {
+        actorUserId: currentUser.userId,
+        sessionId: currentUser.sessionId,
+        sourceAddress: sourceAddressOf(request),
+        action: 'blackout_window.deleted',
+        targetType: 'blackout_window',
+        targetId: windowId,
+        beforeState: toBlackoutWindow(existing),
+        afterState: null,
+        outcome: 'success',
+      });
+      return reply.code(204).send();
+    },
+  );
+
+  function toScanSchedule(row: {
+    id: string;
+    name: string;
+    scope_id: string;
+    profile_id: string;
+    cron_expression: string;
+    timezone: string;
+    next_run_at: Date | string | null;
+    is_enabled: boolean;
+  }) {
+    return {
+      id: row.id,
+      name: row.name,
+      scopeId: row.scope_id,
+      profileId: row.profile_id,
+      cronExpression: row.cron_expression,
+      timezone: row.timezone,
+      nextRunAt: row.next_run_at,
+      isEnabled: row.is_enabled,
+    };
+  }
+
+  app.get(
+    '/scan-schedules/:scheduleId',
+    { preHandler: requireSession(deps) },
+    async (request, reply) => {
+      const { scheduleId } = request.params as { scheduleId: string };
+      const row = await db
+        .selectFrom('scan_schedules')
+        .selectAll()
+        .where('id', '=', scheduleId)
+        .executeTakeFirst();
+      if (!row) {
+        return reply
+          .code(404)
+          .type('application/problem+json')
+          .send(problem(404, 'resource.not_found', 'Scan schedule not found'));
+      }
+      reply.header('ETag', etagFor(toScanSchedule(row)));
+      return reply.code(200).send(toScanSchedule(row));
+    },
+  );
+
+  app.patch(
+    '/scan-schedules/:scheduleId',
+    { preHandler: requireSession(deps) },
+    async (request, reply) => {
+      const currentUser = request.currentUser!;
+      if (!(await requireOperator(db, currentUser.userId))) {
+        return reply
+          .code(403)
+          .type('application/problem+json')
+          .send(problem(403, 'auth.forbidden', 'Operator role required'));
+      }
+      const { scheduleId } = request.params as { scheduleId: string };
+      const existing = await db
+        .selectFrom('scan_schedules')
+        .selectAll()
+        .where('id', '=', scheduleId)
+        .executeTakeFirst();
+      if (!existing) {
+        return reply
+          .code(404)
+          .type('application/problem+json')
+          .send(problem(404, 'resource.not_found', 'Scan schedule not found'));
+      }
+
+      const body = request.body as {
+        name?: string;
+        cronExpression?: string;
+        timezone?: string;
+        isEnabled?: boolean;
+      };
+      const updates: Record<string, unknown> = {};
+      if (body?.name !== undefined) updates.name = body.name;
+      if (body?.cronExpression !== undefined) updates.cron_expression = body.cronExpression;
+      if (body?.timezone !== undefined) updates.timezone = body.timezone;
+      if (body?.isEnabled !== undefined) updates.is_enabled = body.isEnabled;
+      if (Object.keys(updates).length === 0) {
+        return reply
+          .code(400)
+          .type('application/problem+json')
+          .send(problem(400, 'validation.schema_violation', 'No updatable fields were supplied'));
+      }
+
+      await db.updateTable('scan_schedules').set(updates).where('id', '=', scheduleId).execute();
+      await appendAuditEntry(db, {
+        actorUserId: currentUser.userId,
+        sessionId: currentUser.sessionId,
+        sourceAddress: sourceAddressOf(request),
+        action: 'scan_schedule.updated',
+        targetType: 'scan_schedule',
+        targetId: scheduleId,
+        beforeState: toScanSchedule(existing),
+        afterState: updates,
+        outcome: 'success',
+      });
+
+      const row = await db
+        .selectFrom('scan_schedules')
+        .selectAll()
+        .where('id', '=', scheduleId)
+        .executeTakeFirstOrThrow();
+      reply.header('ETag', etagFor(toScanSchedule(row)));
+      return reply.code(200).send(toScanSchedule(row));
+    },
+  );
+
+  app.delete(
+    '/scan-schedules/:scheduleId',
+    { preHandler: requireSession(deps) },
+    async (request, reply) => {
+      const currentUser = request.currentUser!;
+      if (!(await requireOperator(db, currentUser.userId))) {
+        return reply
+          .code(403)
+          .type('application/problem+json')
+          .send(problem(403, 'auth.forbidden', 'Operator role required'));
+      }
+      const { scheduleId } = request.params as { scheduleId: string };
+      const existing = await db
+        .selectFrom('scan_schedules')
+        .selectAll()
+        .where('id', '=', scheduleId)
+        .executeTakeFirst();
+      if (!existing) {
+        return reply
+          .code(404)
+          .type('application/problem+json')
+          .send(problem(404, 'resource.not_found', 'Scan schedule not found'));
+      }
+      await db.deleteFrom('scan_schedules').where('id', '=', scheduleId).execute();
+      await appendAuditEntry(db, {
+        actorUserId: currentUser.userId,
+        sessionId: currentUser.sessionId,
+        sourceAddress: sourceAddressOf(request),
+        action: 'scan_schedule.deleted',
+        targetType: 'scan_schedule',
+        targetId: scheduleId,
+        beforeState: toScanSchedule(existing),
+        afterState: null,
+        outcome: 'success',
+      });
+      return reply.code(204).send();
+    },
+  );
 }

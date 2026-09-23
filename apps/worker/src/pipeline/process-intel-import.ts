@@ -82,7 +82,10 @@ function pickBestCvss(metrics: Record<string, unknown> | undefined): NvdCvssPick
   const order = ['cvssMetricV40', 'cvssMetricV31', 'cvssMetricV30', 'cvssMetricV2'] as const;
   for (const key of order) {
     const entries = metrics[key] as
-      | readonly { type?: string; cvssData: { version: string; vectorString: string; baseScore: number } }[]
+      | readonly {
+          type?: string;
+          cvssData: { version: string; vectorString: string; baseScore: number };
+        }[]
       | undefined;
     if (!entries || entries.length === 0) continue;
     const primary = entries.find((e) => e.type === 'Primary') ?? entries[0]!;
@@ -98,11 +101,9 @@ function pickBestCvss(metrics: Record<string, unknown> | undefined): NvdCvssPick
 function parseNvdCve(raw: Record<string, unknown>): ParsedNvdRecord {
   const descriptions = raw.descriptions as readonly { lang: string; value: string }[] | undefined;
   const weaknesses = raw.weaknesses as
-    | readonly { description: readonly { lang: string; value: string }[] }[]
-    | undefined;
+    readonly { description: readonly { lang: string; value: string }[] }[] | undefined;
   const configurations = raw.configurations as
-    | readonly { nodes: readonly { cpeMatch: readonly Record<string, unknown>[] }[] }[]
-    | undefined;
+    readonly { nodes: readonly { cpeMatch: readonly Record<string, unknown>[] }[] }[] | undefined;
 
   const cpes: { cpe: string; versionRange: string | null }[] = [];
   for (const config of configurations ?? []) {
@@ -111,10 +112,14 @@ function parseNvdCve(raw: Record<string, unknown>): ParsedNvdRecord {
         const criteria = match.criteria as string | undefined;
         if (!criteria) continue;
         const bounds: string[] = [];
-        if (typeof match.versionStartIncluding === 'string') bounds.push(`>=${match.versionStartIncluding}`);
-        if (typeof match.versionStartExcluding === 'string') bounds.push(`>${match.versionStartExcluding}`);
-        if (typeof match.versionEndIncluding === 'string') bounds.push(`<=${match.versionEndIncluding}`);
-        if (typeof match.versionEndExcluding === 'string') bounds.push(`<${match.versionEndExcluding}`);
+        if (typeof match.versionStartIncluding === 'string')
+          bounds.push(`>=${match.versionStartIncluding}`);
+        if (typeof match.versionStartExcluding === 'string')
+          bounds.push(`>${match.versionStartExcluding}`);
+        if (typeof match.versionEndIncluding === 'string')
+          bounds.push(`<=${match.versionEndIncluding}`);
+        if (typeof match.versionEndExcluding === 'string')
+          bounds.push(`<${match.versionEndExcluding}`);
         cpes.push({ cpe: criteria, versionRange: bounds.length > 0 ? bounds.join(' ') : null });
       }
     }
@@ -160,7 +165,9 @@ async function fetchNvdWindow(
     let response: Response;
     try {
       response = await fetch(url, {
-        signal: AbortSignal.timeout(page === 0 ? CONNECTIVITY_CHECK_TIMEOUT_MS : NORMAL_REQUEST_TIMEOUT_MS),
+        signal: AbortSignal.timeout(
+          page === 0 ? CONNECTIVITY_CHECK_TIMEOUT_MS : NORMAL_REQUEST_TIMEOUT_MS,
+        ),
       });
     } catch (error) {
       if (page === 0) onFirstRequestConnectivityError();
@@ -182,8 +189,11 @@ async function fetchNvdWindow(
 }
 
 async function fetchEpssScores(): Promise<ReadonlyMap<string, number>> {
-  const response = await fetch(EPSS_BULK_URL, { signal: AbortSignal.timeout(NORMAL_REQUEST_TIMEOUT_MS) });
-  if (!response.ok) throw new Error(`EPSS bulk fetch returned ${response.status} ${response.statusText}`);
+  const response = await fetch(EPSS_BULK_URL, {
+    signal: AbortSignal.timeout(NORMAL_REQUEST_TIMEOUT_MS),
+  });
+  if (!response.ok)
+    throw new Error(`EPSS bulk fetch returned ${response.status} ${response.statusText}`);
   const compressed = Buffer.from(await response.arrayBuffer());
   const csv = gunzipSync(compressed).toString('utf8');
   const scores = new Map<string, number>();
@@ -222,7 +232,11 @@ export async function processIntelImport(importId: string, db: Kysely<DB>): Prom
     ?.requestedOptions ?? { modifiedSinceDays: 7 };
   const options = requested;
 
-  const settings = await db.selectFrom('intel_settings').selectAll().where('id', '=', 1).executeTakeFirst();
+  const settings = await db
+    .selectFrom('intel_settings')
+    .selectAll()
+    .where('id', '=', 1)
+    .executeTakeFirst();
   if (settings?.online_updates_disabled) {
     // Second-layer check (SAFE-02-style): apps/api already refuses to create
     // the import row when disabled, but the flag could change between
@@ -236,7 +250,8 @@ export async function processIntelImport(importId: string, db: Kysely<DB>): Prom
   }
 
   const severityFloor = options.severityFloor ?? DEFAULT_SEVERITY_FLOOR;
-  const exploitProbabilityThreshold = options.exploitProbabilityThreshold ?? DEFAULT_EXPLOIT_PROBABILITY_THRESHOLD;
+  const exploitProbabilityThreshold =
+    options.exploitProbabilityThreshold ?? DEFAULT_EXPLOIT_PROBABILITY_THRESHOLD;
   const windowStartedAt = new Date();
 
   let nvdRecords: readonly ParsedNvdRecord[];
@@ -263,7 +278,9 @@ export async function processIntelImport(importId: string, db: Kysely<DB>): Prom
       .updateTable('vulnerability_data_imports')
       .set({
         status: 'failed',
-        failure_reason: isConnectivity ? 'no_connectivity' : String(error instanceof Error ? error.message : error),
+        failure_reason: isConnectivity
+          ? 'no_connectivity'
+          : String(error instanceof Error ? error.message : error),
       })
       .where('id', '=', importId)
       .execute();
@@ -275,7 +292,11 @@ export async function processIntelImport(importId: string, db: Kysely<DB>): Prom
   // publication-year cutoff (FEED-01/FEED-05).
   const retained = nvdRecords.filter((r) => {
     const epss = epssScores.get(r.cveId) ?? null;
-    return r.knownExploited || (r.cvss !== null && r.cvss.baseScore >= severityFloor) || (epss !== null && epss >= exploitProbabilityThreshold);
+    return (
+      r.knownExploited ||
+      (r.cvss !== null && r.cvss.baseScore >= severityFloor) ||
+      (epss !== null && epss >= exploitProbabilityThreshold)
+    );
   });
   const discardedCount = nvdRecords.length - retained.length;
 
@@ -305,7 +326,11 @@ export async function processIntelImport(importId: string, db: Kysely<DB>): Prom
         data_import_id: importId,
       };
       if (existing) {
-        await trx.updateTable('vulnerabilities').set(values).where('id', '=', existing.id).execute();
+        await trx
+          .updateTable('vulnerabilities')
+          .set(values)
+          .where('id', '=', existing.id)
+          .execute();
         modified += 1;
       } else {
         await trx

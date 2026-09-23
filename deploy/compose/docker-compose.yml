@@ -108,6 +108,24 @@ services:
       - blobstore:/var/lib/xenitex/blob-store
     restart: 'no'
 
+  # SEC-06: TLS on by default, with a self-signed certificate generated at
+  # first run and a prominent operator warning. Runs to completion before
+  # `web` starts, the same pattern blobstore-init uses, so nginx never
+  # starts against a missing certificate path.
+  tls-init:
+    image: alpine:3.20
+    user: root
+    entrypoint: ['/bin/sh', '/opt/generate-self-signed-cert.sh']
+    environment:
+      TLS_SELF_SIGNED_CN: '${TLS_SELF_SIGNED_CN:-xenitex-appliance}'
+    volumes:
+      - ./generate-self-signed-cert.sh:/opt/generate-self-signed-cert.sh:ro
+      - tls:/etc/nginx/tls
+    # openssl is not in the base alpine image; the script apk-adds it, which
+    # keeps that dependency inside a short-lived init container rather than
+    # in the long-running web image.
+    restart: 'no'
+
   api:
     build:
       context: ../..
@@ -125,6 +143,13 @@ services:
       API_HOST: '0.0.0.0' # bound only inside `internal`; SEC-01's private-interface binding is enforced by the host firewall/reverse-proxy, not this container
       API_PORT: '8443'
       BLOB_STORE_ROOT: '/var/lib/xenitex/blob-store'
+      # DATA-03/SEC-11: apps/api only ever sees the `web` container as its
+      # peer, so without this every audit entry records nginx's address and
+      # the per-source login rate limiter treats the whole appliance as one
+      # client. Scoped to the compose `edge` network's subnet, never a bare
+      # `true` — trusting any X-Forwarded-For would let a client forge its
+      # own source address, which is worse than recording the proxy's.
+      TRUSTED_PROXY_CIDRS: '${TRUSTED_PROXY_CIDRS:-172.16.0.0/12}'
     env_file:
       - ./.env # SEC-05: 0600 permissions expected; never committed
     depends_on:
@@ -160,10 +185,10 @@ services:
           cpus: '3'
           memory: 8g
 
-  # SEC-03: scanner adapters run in their own containers, separate from the API,
-  # hold no database credentials, and only egress to scan targets on the
-  # customer's network — never to postgres/redis directly and never to the
-  # public internet (SEC-04: egress denied by default).
+  # SEC-03: scanner adapters run in their own containers, separate from the
+  # API. Egress is denied by default at the host firewall; the complete
+  # allowlist, and the reason for each entry, is in
+  # deploy/compose/egress-allowlist.md (SEC-04).
   worker:
     build:
       context: ../..
@@ -232,15 +257,19 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
-    # No `ports:` mapping existed at all until now -- the container was
-    # healthy and serving on 8080 *inside* the Docker network the whole
-    # time, but nothing published that port to the host, so a browser
-    # outside Docker had no path to it regardless of container state.
     # SEC-01: bind to a configurable interface, private by default -- set
     # WEB_HOST_BIND in deploy/compose/.env to a specific private IP for a
     # real deployment; 0.0.0.0 here is only reasonable for local dev/testing.
+    # 8443 is the panel (TLS, SEC-06); 8080 exists only to 308 users over to
+    # it so a bookmarked http:// URL still lands somewhere useful.
     ports:
+      - '${WEB_HOST_BIND:-0.0.0.0}:8443:8443'
       - '${WEB_HOST_BIND:-0.0.0.0}:8080:8080'
+    volumes:
+      - tls:/etc/nginx/tls:ro
+    depends_on:
+      tls-init:
+        condition: service_completed_successfully
     networks:
       - edge
     deploy:
@@ -255,10 +284,21 @@ networks:
   # api <-> postgres/redis/worker, unreachable from outside the compose network.
   internal:
     internal: true
-  # worker's only egress path, scoped to the authorized_scope CIDR ranges at the
-  # host firewall level — this network being separate from `internal` is what
-  # makes SEC-04's default-deny egress enforceable per-container rather than
-  # per-host.
+  # worker's egress path. Separating it from `internal` is what makes
+  # SEC-04's default-deny enforceable per-container rather than per-host —
+  # but note carefully what this file does and does not do.
+  #
+  # A Docker bridge network does NOT restrict outbound traffic. Declaring
+  # this network scopes which CONTAINERS can reach it; it does not stop the
+  # worker reaching any destination the host can route to. SEC-04's
+  # default-deny is therefore enforced at the HOST firewall, and
+  # deploy/compose/egress-allowlist.md is the authoritative list of what
+  # that firewall must permit. This comment previously asserted that the
+  # worker egressed "never to the public internet", which was not true of
+  # the shipped code — apps/worker/src/pipeline/process-intel-import.ts
+  # fetches from services.nvd.nist.gov and epss.cyentia.com when an
+  # administrator invokes an intelligence sync. Stating a control as
+  # enforced when it is not is worse than not having it.
   scan_egress:
 
 secrets:
@@ -271,3 +311,6 @@ volumes:
   pgdata:
   redisdata:
   blobstore:
+  # SEC-06: holds server.crt/server.key. Survives container replacement, so
+  # a customer-installed certificate is not lost on upgrade.
+  tls:

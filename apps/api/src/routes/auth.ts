@@ -1,4 +1,5 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
+import type { UserRoleEnum } from '@xenitex/db';
 import { newId } from '@xenitex/domain';
 import type { ApiDependencies } from '../dependencies.js';
 import { appendAuditEntry } from '../audit/audit-log.js';
@@ -210,6 +211,25 @@ export async function registerAuthRoutes(
 
   app.post('/auth/mfa/enroll', { preHandler: requireSession(deps) }, async (request, reply) => {
     const currentUser = request.currentUser!;
+    // Enrolment is a one-way door. Without this, anyone holding a live
+    // session (a stolen cookie, an unlocked workstation) could silently
+    // re-enrol a secret of their own and permanently displace the real
+    // owner's authenticator — turning the second factor into an asset the
+    // attacker controls rather than one that stops them. Rotating a real
+    // TOTP secret is an administrator action against the user record, not
+    // something a session can do to itself.
+    if (currentUser.mfaEnabled) {
+      return reply
+        .code(409)
+        .type('application/problem+json')
+        .send(
+          problem(
+            409,
+            'auth.mfa_already_enrolled',
+            'Multi-factor authentication is already enrolled for this account',
+          ),
+        );
+    }
     const secretBase32 = generateTotpSecret();
     const enrollmentToken = await createPendingEnrollment(redis, currentUser.userId, secretBase32);
     const user = await db
@@ -378,7 +398,7 @@ export async function registerAuthRoutes(
         createdAt: user.created_at,
         mustChangePassword: user.must_change_password,
       },
-      capabilities: capabilitiesFor(user.role),
+      capabilities: sessionCapabilities(deps, user.role),
     });
   });
 }
@@ -420,10 +440,13 @@ export async function establishSession(
   sourceAddress: string,
 ): Promise<void> {
   const { db } = deps;
-  const session = await createSession(db, userId, sourceAddress, request.headers['user-agent'], {
-    idleTimeoutMinutes: 30,
-    absoluteTimeoutHours: 12,
-  });
+  const session = await createSession(
+    db,
+    userId,
+    sourceAddress,
+    request.headers['user-agent'],
+    deps.session,
+  );
   reply.setCookie(SESSION_COOKIE, session.rawSessionToken, {
     httpOnly: true,
     secure: true,
@@ -487,14 +510,92 @@ async function completeLogin(
       createdAt: user.created_at,
       mustChangePassword: user.must_change_password,
     },
-    capabilities: capabilitiesFor(user.role),
+    capabilities: sessionCapabilities(deps, user.role),
   });
+}
+
+/**
+ * P1-23's capability payload, plus the two keys the panel needs to render
+ * the right MFA affordance. Still cosmetic (SEC-13) — the server enforces
+ * the gate itself in `requireSession` regardless of what a client does
+ * with these.
+ */
+export function sessionCapabilities(
+  deps: ApiDependencies,
+  role: UserRoleEnum,
+): Record<string, boolean> {
+  return {
+    ...capabilitiesFor(role),
+    // True when this account must enrol before it can use the appliance.
+    'auth.mfaEnrollmentRequired':
+      deps.mfaEnforcement === 'mandatory' && MFA_MANDATORY_ROLES.has(role),
+    // Always true: enrolment is voluntary and available to everyone even
+    // when it is not being forced, so the panel can always offer it.
+    'auth.mfaEnrollmentAvailable': true,
+  };
 }
 
 export interface CurrentUserContext {
   readonly userId: string;
   readonly sessionId: string;
   readonly csrfTokenHash: string;
+  /** Carried on the request so no handler needs its own `SELECT role FROM users` (SEC-13). */
+  readonly role: UserRoleEnum;
+  readonly mfaEnabled: boolean;
+  readonly mustChangePassword: boolean;
+}
+
+/**
+ * SEC-09: TOTP is mandatory for these roles. Enforcement lives here, on the
+ * server, for every request — not in apps/web's AuthGate, which is cosmetic
+ * (SEC-13) and which a client can simply not run.
+ */
+export const MFA_MANDATORY_ROLES: ReadonlySet<UserRoleEnum> = new Set<UserRoleEnum>([
+  'operator',
+  'administrator',
+]);
+
+/**
+ * The only routes a session may reach while it is still carrying an
+ * unsatisfied account gate — the ones needed to *clear* that gate, plus the
+ * two that let a client find out it is gated and get out again. Everything
+ * else 403s with a machine-readable code the panel branches on.
+ *
+ * Written the way the route handlers declare them, i.e. WITHOUT the `/v1`
+ * mount prefix. `request.routeOptions.url` reports the fully-resolved path
+ * INCLUDING that prefix (`/v1/auth/session`, not `/auth/session`), so it is
+ * normalised by `gateRoutePath` below before lookup.
+ *
+ * Getting this wrong fails in the worst possible direction: if the
+ * allowlist never matches, the routes that let a user CLEAR the gate are
+ * themselves gated, and an operator or administrator who has not yet
+ * enrolled TOTP can never enrol — permanently locked out of their own
+ * appliance with no way back through the product.
+ */
+const PASSWORD_CHANGE_GATE_ALLOWLIST: ReadonlySet<string> = new Set([
+  '/auth/session',
+  '/auth/logout',
+  '/auth/password',
+]);
+
+const MFA_ENROLLMENT_GATE_ALLOWLIST: ReadonlySet<string> = new Set([
+  '/auth/session',
+  '/auth/logout',
+  '/auth/password',
+  '/auth/mfa/enroll',
+  '/auth/mfa/enroll/confirm',
+]);
+
+/**
+ * The matched route's path with the URI version prefix removed, so the
+ * allowlists above can be written once and stay correct if the mount prefix
+ * ever changes (ADR 0006 uses URI path versioning, so `/v2` is a real
+ * future). Falls back to the raw request path when no route matched —
+ * which cannot reach a gate anyway, since an unmatched route 404s first.
+ */
+export function gateRoutePath(request: FastifyRequest): string {
+  const url = request.routeOptions?.url ?? request.url.split('?')[0] ?? '';
+  return url.replace(/^\/v\d+(?=\/)/, '');
 }
 
 declare module 'fastify' {
@@ -513,12 +614,7 @@ const MUTATING_METHODS = new Set(['POST', 'PATCH', 'PUT', 'DELETE']);
 export function requireSession(deps: ApiDependencies, options: { optional?: boolean } = {}) {
   return async (request: FastifyRequest, reply: import('fastify').FastifyReply) => {
     const rawToken = request.cookies[SESSION_COOKIE];
-    const resolved = rawToken
-      ? await resolveSession(deps.db, rawToken, {
-          idleTimeoutMinutes: 30,
-          absoluteTimeoutHours: 12,
-        })
-      : null;
+    const resolved = rawToken ? await resolveSession(deps.db, rawToken, deps.session) : null;
 
     if (!resolved) {
       if (options.optional) return;
@@ -539,10 +635,51 @@ export function requireSession(deps: ApiDependencies, options: { optional?: bool
       }
     }
 
+    // Account gates, in the same order apps/web presents them. These run
+    // AFTER the CSRF check (a gated session is still a real session, and a
+    // cross-site POST to /auth/password must not bypass CSRF just because
+    // the account happens to be gated) and BEFORE `currentUser` is set, so
+    // no downstream handler can act for a gated session by accident.
+    const routeUrl = gateRoutePath(request);
+
+    if (resolved.mustChangePassword && !PASSWORD_CHANGE_GATE_ALLOWLIST.has(routeUrl)) {
+      return reply
+        .code(403)
+        .type('application/problem+json')
+        .send(
+          problem(
+            403,
+            'auth.password_change_required',
+            'This account must change its password before continuing',
+          ),
+        );
+    }
+
+    if (
+      deps.mfaEnforcement === 'mandatory' &&
+      MFA_MANDATORY_ROLES.has(resolved.role) &&
+      !resolved.mfaEnabled &&
+      !MFA_ENROLLMENT_GATE_ALLOWLIST.has(routeUrl)
+    ) {
+      return reply
+        .code(403)
+        .type('application/problem+json')
+        .send(
+          problem(
+            403,
+            'auth.mfa_enrollment_required',
+            'This role requires TOTP multi-factor authentication to be enrolled first',
+          ),
+        );
+    }
+
     request.currentUser = {
       userId: resolved.userId,
       sessionId: resolved.sessionId,
       csrfTokenHash: resolved.csrfTokenHash,
+      role: resolved.role,
+      mfaEnabled: resolved.mfaEnabled,
+      mustChangePassword: resolved.mustChangePassword,
     };
   };
 }

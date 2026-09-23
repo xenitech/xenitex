@@ -7,7 +7,7 @@ import { requireRole } from '../auth/capabilities.js';
 import { problem, requireSession, sourceAddressOf } from './auth.js';
 import { buildPage, decodeCursor, parseLimit } from '../lib/pagination.js';
 import { getIdempotentResponse, storeIdempotentResponse } from '../lib/idempotency.js';
-import { expandCidrRanges } from '../lib/cidr.js';
+import { expandCidrRanges, isIpv4InCidr } from '@xenitex/domain';
 
 const PLAN_PREVIEW_TTL_MINUTES = 15;
 
@@ -276,13 +276,15 @@ export async function registerScanRoutes(
         excludedTargets.push({ target, ruleId: directHit });
         continue;
       }
-      const rangeHit = rangeExclusions.find((r) => {
-        try {
-          return expandCidrRanges([r.value]).addresses.includes(target);
-        } catch {
-          return false;
-        }
-      });
+      // O(1) mask comparison per (target, rule). This used to call
+      // expandCidrRanges([rule.value]).addresses.includes(target) INSIDE
+      // this loop — materialising the rule's entire address list, up to
+      // 65,536 strings, and then linearly scanning it, once per target.
+      // A /16 scope with a single range exclusion is 65,536 targets x
+      // 65,536 comparisons: the request never returns, and it is a
+      // safety-control path, so the failure mode was "operator cannot
+      // create a plan at all" on exactly the scope sizes PERF-03 targets.
+      const rangeHit = rangeExclusions.find((r) => isIpv4InCidr(target, r.value));
       if (rangeHit) {
         excludedTargets.push({ target, ruleId: rangeHit.id });
         continue;
@@ -513,21 +515,32 @@ export async function registerScanRoutes(
         .executeTakeFirstOrThrow();
       const { addresses } = expandCidrRanges(scope.cidr_ranges as unknown as string[]);
       const allTargets = [...addresses, ...scope.hostnames];
-      for (const target of allTargets) {
+      const targetRows = allTargets.map((target) => {
         const excludedRuleId = excludedByTarget.get(target);
+        return {
+          id: newId(),
+          scan_run_id: scanRunId,
+          target_address: target,
+          status: excludedRuleId ? ('excluded' as const) : ('pending' as const),
+          excluded_by_rule_id: excludedRuleId ?? null,
+          // Real adapter assignment happens in the worker once it picks a
+          // target up, not here -- the API does not guess which adapter
+          // will run it.
+          adapter_key: 'unassigned',
+        };
+      });
+      // Chunked multi-row INSERTs, not one round trip per target. A /16
+      // scope is 65,534 targets, and issuing 65,534 sequential INSERTs
+      // inside a single transaction inside an HTTP handler took long
+      // enough that the request timed out and left the transaction to roll
+      // back -- so creating a run over a large scope simply did not work.
+      // 1,000 rows per statement keeps each statement's parameter count
+      // well inside Postgres's 65,535 bound parameter limit.
+      const INSERT_CHUNK_SIZE = 1_000;
+      for (let offset = 0; offset < targetRows.length; offset += INSERT_CHUNK_SIZE) {
         await trx
           .insertInto('scan_run_targets')
-          .values({
-            id: newId(),
-            scan_run_id: scanRunId,
-            target_address: target,
-            status: excludedRuleId ? 'excluded' : 'pending',
-            excluded_by_rule_id: excludedRuleId ?? null,
-            // Real adapter assignment is Step 4.1/4.2 pipeline work (not yet
-            // built) -- the worker picks this up once that exists rather
-            // than the API guessing which adapter will actually run it.
-            adapter_key: 'unassigned',
-          })
+          .values(targetRows.slice(offset, offset + INSERT_CHUNK_SIZE))
           .execute();
       }
       await appendAuditEntry(trx, {
@@ -565,21 +578,39 @@ export async function registerScanRoutes(
   });
 
   // --------------------------------------------------- ScanRun lifecycle
+  /**
+   * One conditional UPDATE, not a SELECT followed by an unconditional
+   * UPDATE. The read-then-write version raced against the worker (which
+   * moves a run to `completed`/`failed` on its own) and against a second
+   * concurrent operator: both requests could read `running`, both could
+   * pass the guard, and the second write would silently overwrite the
+   * first -- e.g. resuming a run an instant after someone else aborted it.
+   * Postgres evaluates the WHERE clause and the write atomically, so the
+   * guard and the write cannot be separated.
+   */
   async function transitionScanRun(
     scanRunId: string,
     allowedFrom: readonly string[],
     updates: Record<string, unknown>,
   ) {
+    const updated = await db
+      .updateTable('scan_runs')
+      .set(updates)
+      .where('id', '=', scanRunId)
+      .where('status', 'in', allowedFrom as never)
+      .returning('id')
+      .execute();
+    if (updated.length > 0) return { kind: 'ok' as const };
+
+    // Nothing was updated: either the run does not exist, or it was not in
+    // an allowed state. Distinguish the two for the caller's status code.
     const existing = await db
       .selectFrom('scan_runs')
       .select('status')
       .where('id', '=', scanRunId)
       .executeTakeFirst();
     if (!existing) return { kind: 'not_found' as const };
-    if (!allowedFrom.includes(existing.status))
-      return { kind: 'conflict' as const, from: existing.status };
-    await db.updateTable('scan_runs').set(updates).where('id', '=', scanRunId).execute();
-    return { kind: 'ok' as const };
+    return { kind: 'conflict' as const, from: existing.status };
   }
 
   app.post(
@@ -807,17 +838,91 @@ export async function registerScanRoutes(
           ),
         );
     }
-    const scope = await db
+    // SAFE-01. This used to take whichever non-superseded scope the
+    // database happened to return FIRST, with no check that the address
+    // being verified was actually covered by it -- which meant a
+    // verification scan could probe any address in the estate, in-scope or
+    // not, as long as one authorised scope existed somewhere. The scope
+    // must be one that genuinely authorises THIS address.
+    const candidateScopes = await db
       .selectFrom('authorized_scopes')
-      .select('id')
+      .select(['id', 'cidr_ranges', 'hostnames'])
       .where('superseded_by_id', 'is', null)
-      .executeTakeFirst();
+      .orderBy('accepted_at', 'desc')
+      .execute();
+    const scope = candidateScopes.find(
+      (candidate) =>
+        (candidate.cidr_ranges as unknown as string[]).some((range) =>
+          isIpv4InCidr(asset.address as string, range),
+        ) || candidate.hostnames.includes(asset.address as string),
+    );
+    if (!scope) {
+      return reply
+        .code(422)
+        .type('application/problem+json')
+        .send(
+          problem(
+            422,
+            'scan.address_not_in_scope',
+            'No current authorized scope covers this asset’s address, so it cannot be re-probed',
+          ),
+        );
+    }
+
+    // SAFE-02 layer 1, which this endpoint skipped entirely: a verification
+    // scan is still a scan, and an excluded address is excluded no matter
+    // which endpoint asks for it. The hit is audited rather than silently
+    // dropped, exactly as an exclusion hit on a full scan plan is.
+    const applicableExclusions = await db
+      .selectFrom('exclusion_rules')
+      .select(['id', 'rule_type', 'value'])
+      .where('is_active', '=', true)
+      .where((eb) => eb.or([eb('scope_id', '=', scope.id), eb('scope_id', 'is', null)]))
+      .execute();
+    const exclusionHit = applicableExclusions.find(
+      (rule) =>
+        (rule.rule_type === 'address' && rule.value === asset.address) ||
+        (rule.rule_type === 'range' && isIpv4InCidr(asset.address as string, rule.value)),
+    );
+    if (exclusionHit) {
+      await appendAuditEntry(db, {
+        actorUserId: currentUser.userId,
+        sessionId: currentUser.sessionId,
+        sourceAddress: sourceAddressOf(request),
+        action: 'verification_scan.blocked_by_exclusion',
+        targetType: 'issue',
+        targetId: body.issueId,
+        beforeState: null,
+        afterState: { exclusionRuleId: exclusionHit.id, target: asset.address },
+        outcome: 'denied',
+      });
+      return reply
+        .code(422)
+        .type('application/problem+json')
+        .send(
+          problem(
+            422,
+            'scan.target_excluded',
+            'This asset’s address is covered by an active exclusion rule and must never be probed',
+          ),
+        );
+    }
+
+    // SAFE-03: default to the least intrusive profile that can run, never
+    // whichever profile happens to be oldest. A re-check of one already
+    // known finding has no business escalating intrusiveness, and a profile
+    // marked requires_confirmation cannot be confirmed on this path at all.
     const profile = await db
       .selectFrom('scan_profiles')
-      .select('id')
+      .select(['id', 'intrusiveness'])
+      .where('requires_confirmation', '=', false)
+      .orderBy(
+        sql`case intrusiveness when 'passive-inventory' then 0 when 'safe' then 1 else 2 end`,
+        'asc',
+      )
       .orderBy('created_at', 'asc')
       .executeTakeFirst();
-    if (!scope || !profile) {
+    if (!profile) {
       return reply
         .code(422)
         .type('application/problem+json')
@@ -825,7 +930,7 @@ export async function registerScanRoutes(
           problem(
             422,
             'scan.no_scope_or_profile',
-            'No authorized scope or scan profile exists to run a verification scan under',
+            'No non-confirmation scan profile exists to run a verification scan under',
           ),
         );
     }

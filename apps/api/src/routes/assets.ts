@@ -1,5 +1,4 @@
 import type { FastifyInstance } from 'fastify';
-import { createHash } from 'node:crypto';
 import { sql } from '@xenitex/db';
 import { newId } from '@xenitex/domain';
 import type { ApiDependencies } from '../dependencies.js';
@@ -10,10 +9,7 @@ import { buildPage, decodeCursor, parseLimit } from '../lib/pagination.js';
 import { issueSelect, toIssue, type IssueRow } from './issues.js';
 import { scanRunSelect, toScanRun, type ScanRunRow } from './scans.js';
 import { getIdempotentResponse, storeIdempotentResponse } from '../lib/idempotency.js';
-
-function etagFor(value: unknown): string {
-  return `"${createHash('sha256').update(JSON.stringify(value)).digest('hex').slice(0, 32)}"`;
-}
+import { etagFor } from '../lib/etag.js';
 
 function toAssetMergeEvent(row: {
   id: string;

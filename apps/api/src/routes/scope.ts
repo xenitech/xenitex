@@ -1,5 +1,4 @@
 import type { FastifyInstance } from 'fastify';
-import { createHash } from 'node:crypto';
 import { newId } from '@xenitex/domain';
 import type { ApiDependencies } from '../dependencies.js';
 import { appendAuditEntry } from '../audit/audit-log.js';
@@ -7,15 +6,12 @@ import { requireRole } from '../auth/capabilities.js';
 import { problem, requireSession, sourceAddressOf } from './auth.js';
 import { buildPage, decodeCursor, parseLimit } from '../lib/pagination.js';
 import { getIdempotentResponse, storeIdempotentResponse } from '../lib/idempotency.js';
+import { etagFor } from '../lib/etag.js';
 
 // Matches apps/api/src/routes/scheduling.ts's etagFor exactly (ADR 0006) —
 // duplicated rather than shared, same call as apps/api/src/lib/cidr.ts's
 // duplication in apps/worker: one small self-contained helper, not worth a
 // new shared module for.
-function etagFor(value: unknown): string {
-  return `"${createHash('sha256').update(JSON.stringify(value)).digest('hex').slice(0, 32)}"`;
-}
-
 function toAuthorizedScope(scope: {
   id: string;
   name: string;
@@ -352,7 +348,10 @@ export async function registerScopeRoutes(
         status: 201,
         body: responseBody,
       });
-      return reply.code(201).header('Location', `/v1/authorized-scopes/${newScopeId}`).send(responseBody);
+      return reply
+        .code(201)
+        .header('Location', `/v1/authorized-scopes/${newScopeId}`)
+        .send(responseBody);
     },
   );
 
@@ -525,7 +524,9 @@ export async function registerScopeRoutes(
         actorUserId: currentUser.userId,
         sessionId: currentUser.sessionId,
         sourceAddress: sourceAddressOf(request),
-        action: body.isActive ? 'scope.exclusion_rule_reactivated' : 'scope.exclusion_rule_deactivated',
+        action: body.isActive
+          ? 'scope.exclusion_rule_reactivated'
+          : 'scope.exclusion_rule_deactivated',
         targetType: 'exclusion_rule',
         targetId: ruleId,
         beforeState: { isActive: existing.is_active },

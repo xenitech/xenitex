@@ -15,6 +15,17 @@ export interface ApiDependencies {
   readonly db: Kysely<DB>;
   readonly redis: Redis;
   readonly blobStore: FilesystemBlobStore;
+  /**
+   * SEC-08's absolute/idle timeouts. Carried on `deps` because both halves
+   * of the session lifecycle need them and they used to be written out as
+   * literal `{ idleTimeoutMinutes: 30, absoluteTimeoutHours: 12 }` objects
+   * at each of the two call sites — which silently ignored
+   * SESSION_IDLE_TIMEOUT_MINUTES / SESSION_ABSOLUTE_TIMEOUT_HOURS entirely,
+   * so an operator lowering either in .env got no change at all.
+   */
+  readonly session: ApiConfig['session'];
+  /** SEC-09 enrolment-gate policy — see ApiConfig.mfaEnforcement. */
+  readonly mfaEnforcement: ApiConfig['mfaEnforcement'];
 }
 
 export function buildDependencies(config: ApiConfig): ApiDependencies {
@@ -27,7 +38,13 @@ export function buildDependencies(config: ApiConfig): ApiDependencies {
   });
   const blobStore = new FilesystemBlobStore(config.blobStoreRoot);
 
-  return { db, redis, blobStore };
+  return {
+    db,
+    redis,
+    blobStore,
+    session: config.session,
+    mfaEnforcement: config.mfaEnforcement,
+  };
 }
 
 export async function closeDependencies(deps: ApiDependencies): Promise<void> {

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
+import * as OTPAuth from 'otpauth';
 import { after, before, test } from 'node:test';
 import type { DB } from '@xenitex/db';
 import { newId } from '@xenitex/domain';
@@ -31,8 +32,17 @@ before(async () => {
   db = deps.db;
 });
 
+/**
+ * Every user this file creates, retired together when it finishes. Placing
+ * cleanup here rather than in each test means a test added later gets it
+ * for free — which matters, because the accounts these helpers create are
+ * real, active, and carry a password written in plain text in this file.
+ */
+const createdUserIds: string[] = [];
+
 after(async () => {
   if (!RUN) return;
+  for (const userId of createdUserIds) await retireTestUser(userId);
   await closeDependencies(deps);
 });
 
@@ -52,9 +62,54 @@ function extractCookie(
   return undefined;
 }
 
+/**
+ * Integration tests create real user rows against a real database, and
+ * `audit_entries.session_id` pins the sessions they generate — so the rows
+ * cannot be deleted, and an earlier version of these tests simply left them
+ * behind. Sixty active accounts accumulated in one development appliance
+ * that way, every one of them carrying a password that is written in plain
+ * text a few lines above in this file.
+ *
+ * Retiring them is the same thing the product does to a real account it no
+ * longer wants: revoke the sessions, burn the recovery codes, deactivate,
+ * and overwrite the hash with a value no password can produce. The audit
+ * history stays intact, and nothing usable is left behind.
+ */
+async function retireTestUser(userId: string): Promise<void> {
+  await db
+    .updateTable('sessions')
+    .set({ revoked_at: new Date(), revoked_reason: 'test teardown' })
+    .where('user_id', '=', userId)
+    .where('revoked_at', 'is', null)
+    .execute();
+  await db
+    .updateTable('mfa_recovery_codes')
+    .set({ used_at: new Date() })
+    .where('user_id', '=', userId)
+    .where('used_at', 'is', null)
+    .execute();
+  await db
+    .updateTable('users')
+    .set({ is_active: false, password_hash: '!disabled', mfa_secret_ref: null })
+    .where('id', '=', userId)
+    .execute();
+}
+
+/**
+ * A signed-in administrator, enrolled in TOTP.
+ *
+ * `mfa_enabled: true` is not incidental detail — SEC-09 makes TOTP
+ * mandatory for operator and administrator, and apps/api enforces that on
+ * every request, so an administrator row WITHOUT it is not a state a
+ * correctly-configured appliance can be in. Seeding one and expecting it to
+ * reach protected routes would be testing against a product that does not
+ * exist. Logging in therefore takes the same two-step path a real
+ * administrator takes: credentials, then a TOTP challenge.
+ */
 async function adminSession(app: ReturnType<typeof buildServer>) {
   const email = `resources-admin-${randomUUID()}@example.test`;
   const password = 'correct-horse-battery-staple';
+  const secret = new OTPAuth.Secret({ size: 20 }).base32;
   const userId = newId();
   await db
     .insertInto('users')
@@ -64,8 +119,11 @@ async function adminSession(app: ReturnType<typeof buildServer>) {
       display_name: 'Resources Test Administrator',
       password_hash: await hashPassword(password),
       role: 'administrator',
+      mfa_enabled: true,
+      mfa_secret_ref: secret,
     })
     .execute();
+  createdUserIds.push(userId);
   const loginResponse = await app.inject({
     method: 'POST',
     url: '/v1/auth/login',
@@ -78,8 +136,31 @@ async function adminSession(app: ReturnType<typeof buildServer>) {
     payload: { email, password },
   });
   assert.equal(loginResponse.statusCode, 200);
-  const sessionCookie = extractCookie(loginResponse.headers['set-cookie'], 'xenitex_session');
-  const csrfCookie = extractCookie(loginResponse.headers['set-cookie'], 'xenitex_csrf');
+  assert.equal(
+    loginResponse.json().mfaRequired,
+    true,
+    'SEC-09: an administrator must be challenged',
+  );
+
+  const challengeResponse = await app.inject({
+    method: 'POST',
+    url: '/v1/auth/mfa/challenge',
+    remoteAddress: '10.99.1.1',
+    payload: {
+      challengeToken: loginResponse.json().challengeToken,
+      code: new OTPAuth.TOTP({
+        issuer: 'Xenitex',
+        label: email,
+        algorithm: 'SHA1',
+        digits: 6,
+        period: 30,
+        secret,
+      }).generate(),
+    },
+  });
+  assert.equal(challengeResponse.statusCode, 200);
+  const sessionCookie = extractCookie(challengeResponse.headers['set-cookie'], 'xenitex_session');
+  const csrfCookie = extractCookie(challengeResponse.headers['set-cookie'], 'xenitex_csrf');
   return {
     userId,
     headers: { cookie: `xenitex_session=${sessionCookie}`, 'x-csrf-token': csrfCookie! },

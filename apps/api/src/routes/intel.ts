@@ -1,5 +1,4 @@
 import type { FastifyInstance } from 'fastify';
-import { createHash } from 'node:crypto';
 import { newId } from '@xenitex/domain';
 import type { ApiDependencies } from '../dependencies.js';
 import { appendAuditEntry } from '../audit/audit-log.js';
@@ -7,10 +6,7 @@ import { requireRole } from '../auth/capabilities.js';
 import { problem, requireSession, sourceAddressOf } from './auth.js';
 import { buildPage, decodeCursor, parseLimit } from '../lib/pagination.js';
 import { getIdempotentResponse, storeIdempotentResponse } from '../lib/idempotency.js';
-
-function etagFor(value: unknown): string {
-  return `"${createHash('sha256').update(JSON.stringify(value)).digest('hex').slice(0, 32)}"`;
-}
+import { etagFor } from '../lib/etag.js';
 
 async function requireAdministrator(db: ApiDependencies['db'], userId: string): Promise<boolean> {
   const user = await db
@@ -57,7 +53,10 @@ function toIntelImport(row: {
   };
 }
 
-export async function registerIntelRoutes(app: FastifyInstance, deps: ApiDependencies): Promise<void> {
+export async function registerIntelRoutes(
+  app: FastifyInstance,
+  deps: ApiDependencies,
+): Promise<void> {
   const { db, redis } = deps;
 
   app.get('/intel/status', { preHandler: requireSession(deps) }, async (_request, reply) => {
@@ -101,7 +100,11 @@ export async function registerIntelRoutes(app: FastifyInstance, deps: ApiDepende
     const query = request.query as { cursor?: string; limit?: string };
     const limit = parseLimit(query.limit);
     const cursorId = query.cursor ? decodeCursor(query.cursor) : null;
-    let q = db.selectFrom('vulnerability_data_imports').selectAll().orderBy('id', 'asc').limit(limit + 1);
+    let q = db
+      .selectFrom('vulnerability_data_imports')
+      .selectAll()
+      .orderBy('id', 'asc')
+      .limit(limit + 1);
     if (cursorId) q = q.where('id', '>', cursorId);
     const rows = await q.execute();
     return reply.code(200).send(buildPage(rows, limit, toIntelImport));
@@ -161,7 +164,13 @@ export async function registerIntelRoutes(app: FastifyInstance, deps: ApiDepende
       return reply
         .code(400)
         .type('application/problem+json')
-        .send(problem(400, 'validation.schema_violation', 'modifiedSinceDays must be an integer between 1 and 120'));
+        .send(
+          problem(
+            400,
+            'validation.schema_violation',
+            'modifiedSinceDays must be an integer between 1 and 120',
+          ),
+        );
     }
 
     const importId = newId();
@@ -198,12 +207,19 @@ export async function registerIntelRoutes(app: FastifyInstance, deps: ApiDepende
       .where('id', '=', importId)
       .executeTakeFirstOrThrow();
     const responseBody = toIntelImport(row);
-    await storeIdempotentResponse(redis, 'createIntelSync', idempotencyKey, { status: 202, body: responseBody });
+    await storeIdempotentResponse(redis, 'createIntelSync', idempotencyKey, {
+      status: 202,
+      body: responseBody,
+    });
     return reply.code(202).header('Location', `/v1/intel/imports/${importId}`).send(responseBody);
   });
 
   app.get('/intel/settings', { preHandler: requireSession(deps) }, async (_request, reply) => {
-    const row = await db.selectFrom('intel_settings').selectAll().where('id', '=', 1).executeTakeFirstOrThrow();
+    const row = await db
+      .selectFrom('intel_settings')
+      .selectAll()
+      .where('id', '=', 1)
+      .executeTakeFirstOrThrow();
     const body = { onlineUpdatesDisabled: row.online_updates_disabled };
     return reply.code(200).header('ETag', etagFor(body)).send(body);
   });
@@ -227,25 +243,43 @@ export async function registerIntelRoutes(app: FastifyInstance, deps: ApiDepende
       return reply
         .code(409)
         .type('application/problem+json')
-        .send(problem(409, 'concurrency.stale_resource', 'If-Match does not match the current resource'));
+        .send(
+          problem(
+            409,
+            'concurrency.stale_resource',
+            'If-Match does not match the current resource',
+          ),
+        );
     }
     const body = request.body as { onlineUpdatesDisabled?: boolean };
     if (typeof body.onlineUpdatesDisabled !== 'boolean') {
       return reply
         .code(400)
         .type('application/problem+json')
-        .send(problem(400, 'validation.schema_violation', 'onlineUpdatesDisabled (boolean) is required'));
+        .send(
+          problem(
+            400,
+            'validation.schema_violation',
+            'onlineUpdatesDisabled (boolean) is required',
+          ),
+        );
     }
     await db
       .updateTable('intel_settings')
-      .set({ online_updates_disabled: body.onlineUpdatesDisabled, updated_at: new Date(), updated_by: currentUser.userId })
+      .set({
+        online_updates_disabled: body.onlineUpdatesDisabled,
+        updated_at: new Date(),
+        updated_by: currentUser.userId,
+      })
       .where('id', '=', 1)
       .execute();
     await appendAuditEntry(db, {
       actorUserId: currentUser.userId,
       sessionId: currentUser.sessionId,
       sourceAddress: sourceAddressOf(request),
-      action: body.onlineUpdatesDisabled ? 'intel.online_updates_disabled' : 'intel.online_updates_enabled',
+      action: body.onlineUpdatesDisabled
+        ? 'intel.online_updates_disabled'
+        : 'intel.online_updates_enabled',
       targetType: 'intel_settings',
       targetId: '1',
       beforeState: currentBody,

@@ -80,6 +80,12 @@ export const en = {
       factorAssetCriticality: 'Asset criticality',
       factorConfidence: 'Confidence',
       version: 'Scoring function v{{version}}',
+      unavailableNoBreakdown:
+        'No scoring breakdown was stored for this issue, so its score cannot be explained here. Re-scoring the issue will produce one.',
+      unavailableLegacyFormat:
+        'This score was produced by an earlier version of the scoring function and cannot be explained in the current format. Re-scoring the issue will produce a current breakdown.',
+      partialBreakdown:
+        'Showing {{shown}} of {{total}} stored factors — the rest were written in a format this view cannot read, so these rows do not add up to the total score.',
     },
     emptyState: {
       noScope: {
@@ -89,6 +95,9 @@ export const en = {
       },
     },
     errorState: {
+      unavailableTitle: 'This area is not available right now',
+      unavailableDetail:
+        'Something on this screen could not be displayed. The rest of the appliance is unaffected — scanning, findings, and the audit log are all still running normally.',
       title: 'Something went wrong',
       code: 'code: {{code}}',
       correlation: 'correlation: {{id}}',
@@ -448,6 +457,27 @@ export const en = {
       action: 'Declare a scope',
     },
   },
+  account: {
+    title: 'Your account',
+    identity: {
+      title: 'Account',
+      name: 'Name',
+      email: 'Email',
+      role: 'Role',
+    },
+    mfa: {
+      title: 'Two-factor authentication',
+      enabled: 'Two-factor authentication is on for this account.',
+      notEnabled: 'two-factor off',
+      enable: 'Set up two-factor authentication',
+      optionalDescription:
+        'This appliance does not currently require two-factor authentication, but you can turn it on for your own account. Once enabled, you will be asked for a code from your authenticator app every time you sign in.',
+      requiredDescription:
+        'Your role requires two-factor authentication. Set it up now to continue using the appliance.',
+      disableNote:
+        'To remove two-factor authentication from this account, ask an administrator. It cannot be switched off from a signed-in session.',
+    },
+  },
   reports: {
     title: 'Reports',
     newReport: 'Generate report',
@@ -463,6 +493,11 @@ export const en = {
       generatedAt: 'Generated',
     },
     download: 'Download',
+    dateRangeStart: 'From date',
+    dateRangeEnd: 'To date',
+    dateRangeRequired: 'A delta report compares two dates — choose both.',
+    dateRangeOrder: 'The “from” date must not be after the “to” date.',
+    generateFailed: 'The report could not be generated.',
     empty: {
       title: 'No reports generated yet',
       description: 'Generate a report to share risk posture or technical detail with stakeholders.',
@@ -522,7 +557,8 @@ export const en = {
     },
     intel: {
       updateNow: 'Update now',
-      onlineUpdatesDisabled: 'Online intelligence updates are permanently disabled for this deployment.',
+      onlineUpdatesDisabled:
+        'Online intelligence updates are permanently disabled for this deployment.',
       disableOnlineUpdates: 'Disable online updates permanently',
       enableOnlineUpdates: 'Re-enable online updates',
       activeCorpus: 'Active corpus',
@@ -540,7 +576,8 @@ export const en = {
         superseded: 'Superseded',
       },
       failureReason: {
-        no_connectivity: 'No internet connectivity — this is expected for an air-gapped deployment.',
+        no_connectivity:
+          'No internet connectivity — this is expected for an air-gapped deployment.',
         online_updates_disabled: 'Online updates are disabled for this deployment.',
       },
     },

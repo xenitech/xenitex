@@ -8,19 +8,27 @@ export type { RiskBand };
  * default the seeded `risk_scoring_policies` row matches. Ordered
  * highest-first so `riskBand` can do a simple linear scan.
  */
-export const DEFAULT_RISK_BANDS: readonly { readonly band: RiskBand; readonly minScore: number }[] = [
-  { band: 'critical', minScore: 90 },
-  { band: 'high', minScore: 70 },
-  { band: 'medium', minScore: 40 },
-  { band: 'low', minScore: 15 },
-  { band: 'informational', minScore: 0 },
-];
+export const DEFAULT_RISK_BANDS: readonly { readonly band: RiskBand; readonly minScore: number }[] =
+  [
+    { band: 'critical', minScore: 90 },
+    { band: 'high', minScore: 70 },
+    { band: 'medium', minScore: 40 },
+    { band: 'low', minScore: 15 },
+    { band: 'informational', minScore: 0 },
+  ];
 
 export function riskBand(
   score: number,
-  bands: readonly { readonly band: RiskBand; readonly minScore: number } [] = DEFAULT_RISK_BANDS,
+  bands: readonly { readonly band: RiskBand; readonly minScore: number }[] = DEFAULT_RISK_BANDS,
 ): RiskBand {
-  for (const b of bands) if (score >= b.minScore) return b.band;
+  // Sorted defensively rather than trusting the caller's ordering. The
+  // linear scan below is only correct highest-first, and these bands are
+  // configurable per organisation (SCORE-05) — they arrive from a JSON
+  // column, where nothing preserves or enforces an order. An
+  // ascending-order policy would have classified every single issue as
+  // `informational`, silently, with no error anywhere.
+  const ordered = [...bands].sort((a, b) => b.minScore - a.minScore);
+  for (const b of ordered) if (score >= b.minScore) return b.band;
   return 'informational';
 }
 
@@ -96,7 +104,13 @@ export const DEFAULT_RISK_SCORING_WEIGHTS: RiskScoringWeights = {
 };
 
 export interface ScoreFactorContribution {
-  readonly factor: 'cvssBaseScore' | 'exploitProbability' | 'knownExploited' | 'exposureClassification' | 'assetCriticality' | 'confidence';
+  readonly factor:
+    | 'cvssBaseScore'
+    | 'exploitProbability'
+    | 'knownExploited'
+    | 'exposureClassification'
+    | 'assetCriticality'
+    | 'confidence';
   /** Human-legible statement of the input this factor read, e.g. "9.8 (CVSS v3.1)", "internet-facing", "verified". */
   readonly inputDescription: string;
   readonly multiplier: number;
@@ -116,6 +130,16 @@ function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
 }
 
+/** Guards a configurable weight lookup against a missing or non-finite value — see computeRiskScore. */
+function requireWeight(value: number | undefined, factor: string, key: string): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    throw new Error(
+      `computeRiskScore: risk scoring policy has no usable '${factor}' weight for '${key}'`,
+    );
+  }
+  return value;
+}
+
 /**
  * docs/issues-scoring-dashboard-spec.md SCORE 2.2. Supersedes the
  * GATE-1-accepted weighted-sum function documented in
@@ -131,10 +155,31 @@ export function computeRiskScore(factors: RiskFactors, policy: RiskScoringPolicy
   const base = clamp(factors.normalisedCvssBaseScore, 0, 10) * 10;
   const exploitMultiplier = factors.knownExploited
     ? weights.knownExploitedMultiplier
-    : weights.exploitProbabilityBaseMultiplier + (factors.exploitProbability ?? 0) * weights.exploitProbabilityScale;
-  const exposureMultiplier = weights.exposure[factors.exposureClassification];
-  const criticalityMultiplier = weights.criticality[factors.assetCriticality];
-  const confidenceMultiplier = weights.confidence[factors.confidenceTier];
+    : weights.exploitProbabilityBaseMultiplier +
+      (factors.exploitProbability ?? 0) * weights.exploitProbabilityScale;
+  // Weights are configurable per organisation and reach this function as a
+  // parsed JSON blob, so a key can legitimately be absent — a weights row
+  // written before `ExposureClassification` gained a member, or an operator
+  // PATCHing a partial object. `undefined` propagates silently through `*=`
+  // and produces NaN, which then lands in issues.risk_score, sorts
+  // unpredictably, and makes every ranking in the product meaningless
+  // without raising anything. Fail loudly instead: an unscoreable issue is
+  // a bug to fix, not a number to guess at (MOD-16).
+  const exposureMultiplier = requireWeight(
+    weights.exposure[factors.exposureClassification],
+    'exposure',
+    factors.exposureClassification,
+  );
+  const criticalityMultiplier = requireWeight(
+    weights.criticality[factors.assetCriticality],
+    'criticality',
+    factors.assetCriticality,
+  );
+  const confidenceMultiplier = requireWeight(
+    weights.confidence[factors.confidenceTier],
+    'confidence',
+    factors.confidenceTier,
+  );
 
   let running = base;
   const breakdown: ScoreFactorContribution[] = [
@@ -186,7 +231,10 @@ export function computeRiskScore(factors: RiskFactors, policy: RiskScoringPolicy
   // the last breakdown row's runningScore is corrected to match so the
   // "last row equals totalScore" invariant documented above always holds.
   if (breakdown.length > 0) {
-    breakdown[breakdown.length - 1] = { ...breakdown[breakdown.length - 1]!, runningScore: totalScore };
+    breakdown[breakdown.length - 1] = {
+      ...breakdown[breakdown.length - 1]!,
+      runningScore: totalScore,
+    };
   }
 
   return { totalScore, band: riskBand(totalScore), policyVersion: policy.version, breakdown };
@@ -214,7 +262,9 @@ export interface AssetRiskRatingResult {
  * function over the asset's own currently-open issues — no I/O, matching
  * `computeRiskScore`'s own contract, so it's just as replayable.
  */
-export function computeAssetRiskRating(openIssues: readonly AssetOpenIssueSummary[]): AssetRiskRatingResult {
+export function computeAssetRiskRating(
+  openIssues: readonly AssetOpenIssueSummary[],
+): AssetRiskRatingResult {
   if (openIssues.length === 0) {
     return {
       rating: 0,
@@ -236,7 +286,9 @@ export function computeAssetRiskRating(openIssues: readonly AssetOpenIssueSummar
     }
   }
 
-  const highOrAbove = openIssues.filter((i) => riskBand(i.riskScore) === 'critical' || riskBand(i.riskScore) === 'high');
+  const highOrAbove = openIssues.filter(
+    (i) => riskBand(i.riskScore) === 'critical' || riskBand(i.riskScore) === 'high',
+  );
   const breadthBonus = Math.min(10, 2 * Math.max(0, highOrAbove.length - 1));
   const breadthContributingIssueIds = highOrAbove
     .filter((i) => i.issueId !== maxRiskIssueId)

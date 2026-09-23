@@ -23,3 +23,5 @@ export * from './extensions/telemetry-sink.js';
 export * from './extensions/license-provider.js';
 export * from './extensions/blob-store.js';
 export * from './extensions/remediation-executor.js';
+export * from './net/ipv4.js';
+export * from './matching/cpe.js';

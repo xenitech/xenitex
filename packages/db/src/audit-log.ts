@@ -21,6 +21,59 @@ export interface AuditEntryInput {
   readonly outcome: AuditOutcomeEnum;
 }
 
+/**
+ * The canonicalisation rule new entries are written under. See migration
+ * 0013 — version 1 hashed over insertion-ordered JSON, which Postgres
+ * `jsonb` does not preserve, so those entries cannot be re-verified.
+ */
+export const CURRENT_AUDIT_CHAIN_VERSION = 2;
+
+/**
+ * Deterministic JSON: object keys sorted recursively, so the serialisation
+ * depends only on the VALUES, never on the order a particular code path
+ * happened to build the object in.
+ *
+ * This is the whole fix. `JSON.stringify` emits keys in insertion order;
+ * Postgres `jsonb` stores them in its own normalised order (by key length,
+ * then bytewise). So `{template, formats}` was hashed on write and read
+ * back as `{formats, template}` on verify — different bytes, different
+ * hash, and the chain verifier called a perfectly untouched row tampered.
+ * Every audit entry recording two or more fields of before/after state was
+ * affected, which in practice is most of the interesting ones.
+ *
+ * Arrays keep their order: order is meaningful in an array and is preserved
+ * faithfully by jsonb.
+ */
+function canonicalJson(value: unknown): string {
+  // Honour `toJSON()` exactly as JSON.stringify does, BEFORE deciding this
+  // is a plain object to walk.
+  //
+  // Without this, a `Date` anywhere in before/after state hashed as `{}` —
+  // `Object.entries(someDate)` is empty, so the recursion below happily
+  // serialised it as an empty object. The value that actually lands in the
+  // jsonb column is the ISO string (node-postgres serialises the Date on
+  // the way in), so verification read back `"2026-09-15T07:43:46.913Z"`
+  // and recomputed a different hash. Same class of defect as the key
+  // ordering above — write-time and read-time serialisation disagreeing —
+  // and it surfaced on a real audit entry whose `beforeState` carried a
+  // timestamp column straight out of a SELECT.
+  if (
+    value !== null &&
+    typeof value === 'object' &&
+    typeof (value as { toJSON?: unknown }).toJSON === 'function'
+  ) {
+    value = (value as { toJSON: () => unknown }).toJSON();
+  }
+  if (value === null || typeof value !== 'object') return JSON.stringify(value) ?? 'null';
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
+  const entries = Object.entries(value as Record<string, unknown>)
+    // `undefined` is not representable in jsonb and would round-trip as an
+    // absent key, so it is dropped here too rather than hashed as present.
+    .filter(([, v]) => v !== undefined)
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${canonicalJson(v)}`).join(',')}}`;
+}
+
 function canonicalPayload(input: AuditEntryInput, occurredAt: string): Record<string, unknown> {
   // Explicit key order (not object-insertion-order-dependent, not a `JSON.stringify` of `input` directly)
   // so the exact same logical entry always canonicalizes to the exact same bytes.
@@ -38,8 +91,14 @@ function canonicalPayload(input: AuditEntryInput, occurredAt: string): Record<st
   };
 }
 
-function computeEntryHash(canonical: Record<string, unknown>, prevEntryHash: string): string {
-  return createHash('sha256').update(JSON.stringify(canonical)).update(prevEntryHash).digest('hex');
+function computeEntryHash(
+  canonical: Record<string, unknown>,
+  prevEntryHash: string,
+  chainVersion: number,
+): string {
+  const serialised =
+    chainVersion >= 2 ? canonicalJson(canonical) : (JSON.stringify(canonical) ?? 'null');
+  return createHash('sha256').update(serialised).update(prevEntryHash).digest('hex');
 }
 
 async function insertAuditEntry(trx: Kysely<DB>, input: AuditEntryInput): Promise<void> {
@@ -55,7 +114,7 @@ async function insertAuditEntry(trx: Kysely<DB>, input: AuditEntryInput): Promis
 
   const occurredAt = new Date().toISOString();
   const canonical = canonicalPayload(input, occurredAt);
-  const entryHash = computeEntryHash(canonical, prevEntryHash);
+  const entryHash = computeEntryHash(canonical, prevEntryHash, CURRENT_AUDIT_CHAIN_VERSION);
 
   await trx
     .insertInto('audit_entries')
@@ -73,6 +132,7 @@ async function insertAuditEntry(trx: Kysely<DB>, input: AuditEntryInput): Promis
       canonical_payload: canonical as never,
       prev_entry_hash: prevEntryHash,
       entry_hash: entryHash,
+      chain_version: CURRENT_AUDIT_CHAIN_VERSION,
     })
     .execute();
 }
@@ -103,7 +163,23 @@ export interface AuditChainVerificationResult {
   readonly verifiedUpToId: number;
   readonly gapsDetected: readonly { afterId: number; expectedNextId: number }[];
   readonly hashMismatches: readonly { id: number }[];
+  /**
+   * Entries written under chain_version 1 whose hash cannot be recomputed,
+   * because that version serialised object keys in insertion order and
+   * Postgres `jsonb` does not preserve it (migration 0013). These are NOT
+   * evidence of tampering and must never be presented as such — but they
+   * are also not verified, and saying so plainly is the point.
+   */
+  readonly legacyUnverifiable: readonly { id: number }[];
+  /** True only when every entry the verifier CAN check, checks out. */
   readonly isIntact: boolean;
+  /**
+   * Separate from `isIntact` deliberately. An operator needs to be able to
+   * tell "nothing has been tampered with" from "nothing has been tampered
+   * with, and there is also a block of older entries I am unable to make
+   * that statement about."
+   */
+  readonly containsUnverifiableLegacyEntries: boolean;
 }
 
 /**
@@ -123,6 +199,7 @@ export async function verifyAuditChain(db: Kysely<DB>): Promise<AuditChainVerifi
     .selectFrom('audit_entries')
     .select([
       'id',
+      'chain_version',
       'actor_user_id',
       'session_id',
       'source_address',
@@ -141,6 +218,7 @@ export async function verifyAuditChain(db: Kysely<DB>): Promise<AuditChainVerifi
 
   const gapsDetected: { afterId: number; expectedNextId: number }[] = [];
   const hashMismatches: { id: number }[] = [];
+  const legacyUnverifiable: { id: number }[] = [];
   let previousId: number | null = null;
   let expectedPrevHash = GENESIS_HASH;
   let verifiedUpToId = 0;
@@ -164,12 +242,26 @@ export async function verifyAuditChain(db: Kysely<DB>): Promise<AuditChainVerifi
       },
       new Date(row.occurred_at).toISOString(),
     );
-    const recomputed = computeEntryHash(canonical, row.prev_entry_hash);
-    const intact = recomputed === row.entry_hash && row.prev_entry_hash === expectedPrevHash;
-    if (!intact) {
-      hashMismatches.push({ id });
-    } else {
+    const chainVersion = Number(row.chain_version ?? 1);
+    const recomputed = computeEntryHash(canonical, row.prev_entry_hash, chainVersion);
+    // The linkage check applies to every entry regardless of version: a
+    // deleted or reordered row breaks `prev_entry_hash` continuity no
+    // matter how the payload was serialised, so version-1 entries still
+    // carry real tamper-evidence for insertion and removal.
+    const linkageIntact = row.prev_entry_hash === expectedPrevHash;
+    const payloadIntact = recomputed === row.entry_hash;
+
+    if (linkageIntact && payloadIntact) {
       verifiedUpToId = id;
+    } else if (!linkageIntact) {
+      hashMismatches.push({ id });
+    } else if (chainVersion < 2) {
+      // Version-1 payload hashes are not reproducible after a jsonb round
+      // trip (migration 0013). Reporting these as mismatches is what made
+      // the whole control unusable; they are surfaced honestly instead.
+      legacyUnverifiable.push({ id });
+    } else {
+      hashMismatches.push({ id });
     }
     expectedPrevHash = row.entry_hash;
     previousId = id;
@@ -179,6 +271,8 @@ export async function verifyAuditChain(db: Kysely<DB>): Promise<AuditChainVerifi
     verifiedUpToId,
     gapsDetected,
     hashMismatches,
+    legacyUnverifiable,
     isIntact: gapsDetected.length === 0 && hashMismatches.length === 0,
+    containsUnverifiableLegacyEntries: legacyUnverifiable.length > 0,
   };
 }

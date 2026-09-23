@@ -2,6 +2,7 @@ import { buildDependencies, closeDependencies, type WorkerDependencies } from '.
 import { loadConfig } from './config.js';
 import { processScanRun } from './pipeline/process-scan-run.js';
 import { processIntelImport } from './pipeline/process-intel-import.js';
+import { processReport } from './pipeline/process-report.js';
 
 /**
  * 4.4's pipeline runner. No BullMQ/Redis queue here (unlike the comment this
@@ -17,6 +18,7 @@ import { processIntelImport } from './pipeline/process-intel-import.js';
  */
 let inFlight = false;
 let intelInFlight = false;
+let reportInFlight = false;
 
 /** Independent of pollOnce's scan-run flag — an intel sync and a scan run are unrelated job types and shouldn't block each other. */
 async function pollIntelOnce(deps: WorkerDependencies): Promise<void> {
@@ -38,12 +40,43 @@ async function pollIntelOnce(deps: WorkerDependencies): Promise<void> {
     console.error(`worker: intel import ${runnable.id} failed`, error);
     await deps.db
       .updateTable('vulnerability_data_imports')
-      .set({ status: 'failed', failure_reason: String(error instanceof Error ? error.message : error) })
+      .set({
+        status: 'failed',
+        failure_reason: String(error instanceof Error ? error.message : error),
+      })
       .where('id', '=', runnable.id)
       .where('status', '=', 'validating')
       .execute();
   } finally {
     intelInFlight = false;
+  }
+}
+
+/** 4.8: report generation is its own job type — a long report must not hold up a queued scan, and vice versa. */
+async function pollReportsOnce(deps: WorkerDependencies): Promise<void> {
+  if (reportInFlight) return;
+  const runnable = await deps.db
+    .selectFrom('reports')
+    .select('id')
+    .where('status', '=', 'pending')
+    .orderBy('generated_at', 'asc')
+    .limit(1)
+    .executeTakeFirst();
+  if (!runnable) return;
+
+  reportInFlight = true;
+  try {
+    await processReport(runnable.id, deps);
+  } catch (error) {
+    console.error(`worker: report ${runnable.id} failed`, error);
+    await deps.db
+      .updateTable('reports')
+      .set({ status: 'failed', completed_at: new Date() })
+      .where('id', '=', runnable.id)
+      .where('status', '=', 'pending')
+      .execute();
+  } finally {
+    reportInFlight = false;
   }
 }
 
@@ -89,6 +122,9 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     });
     pollIntelOnce(deps).catch((error) => {
       console.error('worker: intel poll tick failed', error);
+    });
+    pollReportsOnce(deps).catch((error) => {
+      console.error('worker: report poll tick failed', error);
     });
   }, config.pollIntervalMs);
 

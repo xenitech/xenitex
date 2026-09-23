@@ -3,6 +3,8 @@ import { sql } from '@xenitex/db';
 import { newId } from '@xenitex/domain';
 import type { ApiDependencies } from '../dependencies.js';
 import { appendAuditEntry } from '../audit/audit-log.js';
+import { etagFor, ifMatchSatisfied } from '../lib/etag.js';
+import { getIdempotentResponse, storeIdempotentResponse } from '../lib/idempotency.js';
 import { requireRole } from '../auth/capabilities.js';
 import { problem, requireSession, sourceAddressOf } from './auth.js';
 import { encodeCursor, decodeCursor, parseLimit } from '../lib/pagination.js';
@@ -36,6 +38,36 @@ export interface IssueRow {
   last_verified_at: Date | string | null;
   cve_ids: string[] | null;
   vuln_identifier: string | null;
+  updated_at: Date | string;
+}
+
+/**
+ * MOD-10's lifecycle, as a machine rather than a flat allowlist. The
+ * previous check only validated that `toState` was a manually settable
+ * value — it never looked at the state the issue was actually in, so
+ * `new -> mitigated` (claiming a fix for something nobody had triaged) and
+ * `false_positive -> mitigated` (quietly un-dismissing a finding without
+ * the reopen notice MOD-11 requires) both succeeded and were recorded in
+ * issue_state_history as if they were legitimate.
+ *
+ * `verified_resolved` appears only as a SOURCE here: MOD-13 makes it
+ * system-only, set by a verification scan result in apps/worker, never by
+ * this endpoint.
+ */
+const MANUAL_TRANSITIONS: Record<string, readonly string[]> = {
+  new: ['triaged', 'in_progress', 'false_positive'],
+  triaged: ['in_progress', 'mitigated', 'false_positive'],
+  in_progress: ['triaged', 'mitigated', 'false_positive'],
+  mitigated: ['in_progress', 'reopened', 'false_positive'],
+  reopened: ['triaged', 'in_progress', 'false_positive'],
+  verified_resolved: ['reopened'],
+  false_positive: ['reopened'],
+  risk_accepted: ['reopened'],
+};
+
+/** The representation `GET /issues/{id}` hashes into its ETag, and the same one every writer re-checks against. */
+export function issueConcurrencyToken(row: { state: string; updated_at: Date | string }): string {
+  return etagFor({ state: row.state, updatedAt: new Date(row.updated_at).toISOString() });
 }
 
 export function issueSelect(db: ApiDependencies['db']) {
@@ -65,6 +97,9 @@ export function issueSelect(db: ApiDependencies['db']) {
       'issues.first_seen',
       'issues.last_seen',
       'issues.last_verified_at',
+      // Not returned in the body — it is the mutation counter the ETag
+      // (issueConcurrencyToken) is derived from, so If-Match works.
+      'issues.updated_at',
       'vulnerabilities.cve_ids',
       // The `vulnerabilities` table has no `title` column (contract/schema
       // drift -- Vulnerability.title's "first-party catalogue content"
@@ -352,7 +387,11 @@ export async function registerIssueRoutes(
         .selectFrom('remediation_guidance')
         .selectAll()
         .where('match_type', '=', 'cve')
-        .where('match_value', 'in', vulnerabilityRow.cve_ids.length > 0 ? vulnerabilityRow.cve_ids : [''])
+        .where(
+          'match_value',
+          'in',
+          vulnerabilityRow.cve_ids.length > 0 ? vulnerabilityRow.cve_ids : [''],
+        )
         .executeTakeFirst();
       if (guidanceRow) {
         remediationGuidance = {
@@ -363,6 +402,11 @@ export async function registerIssueRoutes(
       }
     }
 
+    // ADR 0006 / MOD-13: the panel reads this header and refuses to enable
+    // any lifecycle action without it. It was never sent, so every triage
+    // button in the issue detail panel was inert — the click handler took
+    // its `if (!etag) return;` branch and nothing happened, with no error.
+    reply.header('ETag', issueConcurrencyToken(issueRow));
     return reply.code(200).send({
       ...issue,
       asset,
@@ -421,7 +465,7 @@ export async function registerIssueRoutes(
       const { issueId } = request.params as { issueId: string };
       const issue = await db
         .selectFrom('issues')
-        .select(['id', 'state'])
+        .select(['id', 'state', 'updated_at'])
         .where('id', '=', issueId)
         .executeTakeFirst();
       if (!issue) {
@@ -429,6 +473,29 @@ export async function registerIssueRoutes(
           .code(404)
           .type('application/problem+json')
           .send(problem(404, 'resource.not_found', 'Issue not found'));
+      }
+      // ADR 0006: the contract marks If-Match required on this operation
+      // and the panel sends it; the server accepted the write regardless,
+      // so two analysts triaging the same issue from two stale views both
+      // succeeded and the later one silently won.
+      const currentEtag = issueConcurrencyToken(issue);
+      if (!ifMatchSatisfied(request.headers['if-match'], currentEtag)) {
+        // 428 when the client never sent a validator at all (it must, and
+        // retrying the identical request will not help); 409 when it sent
+        // one that no longer matches (reload and re-apply will).
+        const detail = request.headers['if-match']
+          ? problem(
+              409,
+              'resource.stale',
+              'This issue changed since you loaded it',
+              'Reload the issue and re-apply your change.',
+            )
+          : problem(
+              428,
+              'resource.if_match_required',
+              'An If-Match header carrying the current ETag is required',
+            );
+        return reply.code(detail.status).type('application/problem+json').send(detail);
       }
       const body = request.body as {
         toState?: string;
@@ -473,6 +540,22 @@ export async function registerIssueRoutes(
           );
       }
 
+      // MOD-10: the transition must be legal FROM the state the issue is
+      // actually in, not merely a legal state to be in.
+      if (!(MANUAL_TRANSITIONS[issue.state] ?? []).includes(body.toState)) {
+        return reply
+          .code(409)
+          .type('application/problem+json')
+          .send(
+            problem(
+              409,
+              'issue.invalid_transition',
+              `An issue in state '${issue.state}' cannot move to '${body.toState}'`,
+              `Allowed from '${issue.state}': ${(MANUAL_TRANSITIONS[issue.state] ?? []).join(', ') || 'none'}.`,
+            ),
+          );
+      }
+
       const historyId = newId();
       await db.transaction().execute(async (trx) => {
         await trx
@@ -505,10 +588,326 @@ export async function registerIssueRoutes(
         });
       });
 
-      const updated = await issueSelect(db)
+      const updated = (await issueSelect(db)
         .where('issues.id', '=', issueId)
-        .executeTakeFirstOrThrow();
-      return reply.code(200).send(toIssue(updated as IssueRow));
+        .executeTakeFirstOrThrow()) as IssueRow;
+      reply.header('ETag', issueConcurrencyToken(updated));
+      return reply.code(200).send(toIssue(updated));
+    },
+  );
+
+  /**
+   * P1-11's bulk triage. Documented in the contract from the start and
+   * never implemented, so the issues screen could only ever be worked one
+   * row at a time — which for a list measured in tens of thousands
+   * (PERF-01) is the difference between a usable triage queue and an
+   * unusable one.
+   *
+   * Per-issue outcomes, never all-or-nothing: one stale ETag or one
+   * illegal transition in a 500-item selection must not discard the other
+   * 499 decisions the analyst just made.
+   */
+  app.post(
+    '/issues/bulk-transitions',
+    { preHandler: requireSession(deps) },
+    async (request, reply) => {
+      const currentUser = request.currentUser!;
+      if (!requireRole(currentUser.role, 'analyst')) {
+        return reply
+          .code(403)
+          .type('application/problem+json')
+          .send(problem(403, 'auth.forbidden', 'Analyst role required'));
+      }
+      const idempotencyKey = request.headers['idempotency-key'] as string | undefined;
+      if (!idempotencyKey) {
+        return reply
+          .code(400)
+          .type('application/problem+json')
+          .send(problem(400, 'validation.schema_violation', 'Idempotency-Key header is required'));
+      }
+      const cached = await getIdempotentResponse(
+        deps.redis,
+        'bulkTransitionIssues',
+        idempotencyKey,
+      );
+      if (cached) return reply.code(cached.status).send(cached.body);
+
+      const body = request.body as {
+        issueIds?: string[];
+        transition?: { toState?: string; reasonCode?: string; justification?: string };
+      };
+      const issueIds = body?.issueIds ?? [];
+      const toState = body?.transition?.toState;
+      const allowedStates = ['triaged', 'in_progress', 'mitigated', 'reopened', 'false_positive'];
+
+      if (issueIds.length === 0 || issueIds.length > 500) {
+        return reply
+          .code(400)
+          .type('application/problem+json')
+          .send(
+            problem(
+              400,
+              'validation.schema_violation',
+              'issueIds must contain between 1 and 500 ids',
+            ),
+          );
+      }
+      if (!toState || !allowedStates.includes(toState)) {
+        return reply
+          .code(400)
+          .type('application/problem+json')
+          .send(
+            problem(
+              400,
+              'validation.schema_violation',
+              `transition.toState must be one of: ${allowedStates.join(', ')}`,
+            ),
+          );
+      }
+      if (
+        toState === 'false_positive' &&
+        (!body.transition?.reasonCode || !body.transition?.justification)
+      ) {
+        // MOD-11 applies per issue, in bulk exactly as it does singly — a
+        // reason and a justification are required, and "I selected 400 rows"
+        // is not an exemption from recording why.
+        return reply
+          .code(400)
+          .type('application/problem+json')
+          .send(
+            problem(
+              400,
+              'validation.schema_violation',
+              'reasonCode and justification are required when transition.toState is false_positive',
+            ),
+          );
+      }
+
+      const results: { issueId: string; outcome: 'applied' | 'failed'; problem?: unknown }[] = [];
+      // De-duplicated: the same id twice in one request must not produce two
+      // history rows for one decision.
+      for (const issueId of [...new Set(issueIds)]) {
+        const issue = await db
+          .selectFrom('issues')
+          .select(['id', 'state'])
+          .where('id', '=', issueId)
+          .executeTakeFirst();
+        if (!issue) {
+          results.push({
+            issueId,
+            outcome: 'failed',
+            problem: problem(404, 'resource.not_found', 'Issue not found'),
+          });
+          continue;
+        }
+        if (!(MANUAL_TRANSITIONS[issue.state] ?? []).includes(toState)) {
+          results.push({
+            issueId,
+            outcome: 'failed',
+            problem: problem(
+              409,
+              'issue.invalid_transition',
+              `An issue in state '${issue.state}' cannot move to '${toState}'`,
+            ),
+          });
+          continue;
+        }
+
+        await db.transaction().execute(async (trx) => {
+          await trx
+            .insertInto('issue_state_history')
+            .values({
+              id: newId(),
+              issue_id: issueId,
+              from_state: issue.state,
+              to_state: toState as never,
+              actor_user_id: currentUser.userId,
+              reason_code: body.transition?.reasonCode ?? null,
+              justification: body.transition?.justification ?? null,
+            })
+            .execute();
+          await trx
+            .updateTable('issues')
+            .set({ state: toState as never, updated_at: new Date() })
+            .where('id', '=', issueId)
+            .execute();
+          await appendAuditEntry(trx, {
+            actorUserId: currentUser.userId,
+            sessionId: currentUser.sessionId,
+            sourceAddress: sourceAddressOf(request),
+            action: 'issue.transitioned',
+            targetType: 'issue',
+            targetId: issueId,
+            beforeState: { state: issue.state },
+            afterState: { state: toState, bulk: true },
+            outcome: 'success',
+          });
+        });
+        results.push({ issueId, outcome: 'applied' });
+      }
+
+      const responseBody = { results };
+      await storeIdempotentResponse(deps.redis, 'bulkTransitionIssues', idempotencyKey, {
+        status: 200,
+        body: responseBody,
+      });
+      return reply.code(200).send(responseBody);
+    },
+  );
+
+  /** Non-lifecycle fields only — ownership and due date. State moves go through /transitions. */
+  app.patch('/issues/:issueId', { preHandler: requireSession(deps) }, async (request, reply) => {
+    const currentUser = request.currentUser!;
+    if (!requireRole(currentUser.role, 'analyst')) {
+      return reply
+        .code(403)
+        .type('application/problem+json')
+        .send(problem(403, 'auth.forbidden', 'Analyst role required'));
+    }
+    const { issueId } = request.params as { issueId: string };
+    const existing = await db
+      .selectFrom('issues')
+      .select(['id', 'state', 'updated_at', 'owner_user_id', 'due_date'])
+      .where('id', '=', issueId)
+      .executeTakeFirst();
+    if (!existing) {
+      return reply
+        .code(404)
+        .type('application/problem+json')
+        .send(problem(404, 'resource.not_found', 'Issue not found'));
+    }
+    if (!ifMatchSatisfied(request.headers['if-match'], issueConcurrencyToken(existing))) {
+      return reply
+        .code(409)
+        .type('application/problem+json')
+        .send(problem(409, 'resource.stale', 'This issue changed since you loaded it'));
+    }
+
+    const body = request.body as { ownerUserId?: string | null; dueDate?: string | null };
+    const updates: Record<string, unknown> = { updated_at: new Date() };
+    if ('ownerUserId' in body) {
+      if (body.ownerUserId) {
+        const owner = await db
+          .selectFrom('users')
+          .select('id')
+          .where('id', '=', body.ownerUserId)
+          .where('is_active', '=', true)
+          .executeTakeFirst();
+        if (!owner) {
+          return reply
+            .code(400)
+            .type('application/problem+json')
+            .send(
+              problem(
+                400,
+                'validation.schema_violation',
+                'ownerUserId does not reference an active user',
+              ),
+            );
+        }
+      }
+      updates.owner_user_id = body.ownerUserId ?? null;
+    }
+    if ('dueDate' in body) {
+      updates.due_date = body.dueDate ? new Date(body.dueDate) : null;
+    }
+
+    await db.updateTable('issues').set(updates).where('id', '=', issueId).execute();
+    await appendAuditEntry(db, {
+      actorUserId: currentUser.userId,
+      sessionId: currentUser.sessionId,
+      sourceAddress: sourceAddressOf(request),
+      action: 'issue.updated',
+      targetType: 'issue',
+      targetId: issueId,
+      beforeState: { ownerUserId: existing.owner_user_id, dueDate: existing.due_date },
+      afterState: { ownerUserId: updates.owner_user_id, dueDate: updates.due_date },
+      outcome: 'success',
+    });
+
+    const updated = (await issueSelect(db)
+      .where('issues.id', '=', issueId)
+      .executeTakeFirstOrThrow()) as IssueRow;
+    reply.header('ETag', issueConcurrencyToken(updated));
+    return reply.code(200).send(toIssue(updated));
+  });
+
+  /** MOD-18: every weight change preserves the issue's historical score snapshot, and this is where the operator sees them. */
+  app.get(
+    '/issues/:issueId/risk-score-history',
+    { preHandler: requireSession(deps) },
+    async (request, reply) => {
+      const { issueId } = request.params as { issueId: string };
+      const rows = await db
+        .selectFrom('issue_risk_score_snapshots')
+        .selectAll()
+        .where('issue_id', '=', issueId)
+        .orderBy('computed_at', 'asc')
+        .execute();
+      return reply.code(200).send(
+        rows.map((row) => ({
+          id: row.id,
+          issueId: row.issue_id,
+          scoringPolicyVersion: row.scoring_policy_version,
+          totalScore: Number(row.total_score),
+          factorBreakdown: row.factor_breakdown,
+          trigger: row.trigger,
+          computedAt: row.computed_at,
+        })),
+      );
+    },
+  );
+
+  app.get(
+    '/issues/:issueId/verification-scans',
+    { preHandler: requireSession(deps) },
+    async (request, reply) => {
+      const { issueId } = request.params as { issueId: string };
+      const rows = await db
+        .selectFrom('verification_scans')
+        .selectAll()
+        .where('issue_id', '=', issueId)
+        .orderBy('requested_at', 'desc')
+        .execute();
+      return reply.code(200).send(
+        rows.map((row) => ({
+          id: row.id,
+          issueId: row.issue_id,
+          scanRunId: row.scan_run_id,
+          requestedBy: row.requested_by,
+          requestedAt: row.requested_at,
+          outcome: row.outcome,
+          resolvedAt: row.resolved_at,
+        })),
+      );
+    },
+  );
+
+  app.get(
+    '/verification-scans/:verificationScanId',
+    { preHandler: requireSession(deps) },
+    async (request, reply) => {
+      const { verificationScanId } = request.params as { verificationScanId: string };
+      const row = await db
+        .selectFrom('verification_scans')
+        .selectAll()
+        .where('id', '=', verificationScanId)
+        .executeTakeFirst();
+      if (!row) {
+        return reply
+          .code(404)
+          .type('application/problem+json')
+          .send(problem(404, 'resource.not_found', 'Verification scan not found'));
+      }
+      return reply.code(200).send({
+        id: row.id,
+        issueId: row.issue_id,
+        scanRunId: row.scan_run_id,
+        requestedBy: row.requested_by,
+        requestedAt: row.requested_at,
+        outcome: row.outcome,
+        resolvedAt: row.resolved_at,
+      });
     },
   );
 }

@@ -1,5 +1,4 @@
 import type { FastifyInstance } from 'fastify';
-import { createHash } from 'node:crypto';
 import { newId } from '@xenitex/domain';
 import type { ApiDependencies } from '../dependencies.js';
 import { appendAuditEntry } from '../audit/audit-log.js';
@@ -8,10 +7,7 @@ import { hashPassword, validatePasswordPolicy } from '../auth/passwords.js';
 import { revokeAllSessionsForUser } from '../auth/sessions.js';
 import { problem, requireSession, sourceAddressOf } from './auth.js';
 import { buildPage, decodeCursor, parseLimit } from '../lib/pagination.js';
-
-function etagFor(value: unknown): string {
-  return `"${createHash('sha256').update(JSON.stringify(value)).digest('hex').slice(0, 32)}"`;
-}
+import { etagFor } from '../lib/etag.js';
 
 function toUser(user: {
   id: string;

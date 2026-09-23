@@ -16,7 +16,7 @@ Read the build prompt first. Nothing here overrides a safety, security, or data 
 - The **security lead** visits twice a week to check posture, approve exceptions, and pull a report for management.
 - The **operator** installs, configures, schedules scans, and is often not a security specialist at all.
 
-**Primary job.** Move a person from *"something is wrong somewhere"* to *"this specific thing, on this specific host, is the one to fix today, and here is the proof"* in as few steps as possible.
+**Primary job.** Move a person from _"something is wrong somewhere"_ to _"this specific thing, on this specific host, is the one to fix today, and here is the proof"_ in as few steps as possible.
 
 **What the panel must never do.** Look impressive at the expense of being readable. Present an inference as a finding. Make a destructive action easy. Hide the evidence.
 
@@ -58,6 +58,7 @@ Define these once in a single tokens file consumed by both themes. No component 
 **Neutral base — cool, low chroma, so risk colour stands apart.**
 
 Light theme:
+
 ```
 surface            #FAFAFB
 surface-sunken     #F2F3F5
@@ -70,6 +71,7 @@ ink-subtle         #868D95
 ```
 
 Dark theme — the analyst's default, because this product is often open on a wall display or in a dim room:
+
 ```
 surface            #14171A
 surface-sunken     #0F1214
@@ -82,6 +84,7 @@ ink-subtle         #6C747D
 ```
 
 **Interactive accent — one hue, deliberately desaturated so it never competes with risk.**
+
 ```
 accent             #2D6E8E
 accent-hover       #255C78
@@ -89,6 +92,7 @@ accent-subtle      #E8F1F5   (light)  /  #17303C (dark)
 ```
 
 **Risk ramp — five bands, ordered by luminance as well as hue so severity survives greyscale and colour-vision deficiency.**
+
 ```
 risk-critical      #9B1C1C
 risk-high          #C4571F
@@ -187,6 +191,7 @@ Every screen in the product uses one of these. There is no third.
 Build these as a documented catalogue **before** building any screen, with visual regression tests on each. `P1-27`
 
 **Data display**
+
 - `UI-44` `RiskBadge` — ordinal bar, numeric score, band label. Focusable; on focus or hover reveals `RiskExplainer`.
 - `UI-45` `RiskExplainer` — popover listing each contributing factor, its input value, its weight, and the resulting contribution, plus the scoring-function version. Satisfies `MOD-17`.
 - `UI-46` `ConfidenceMeter` — three segments plus a word: inferred, corroborated, verified. Never coloured. Satisfies `MOD-19` and `MOD-20`.
@@ -198,6 +203,7 @@ Build these as a documented catalogue **before** building any screen, with visua
 - `UI-52` `Sparkline` and `BarSeries` — the only two chart types in the product. If a third is proposed, the data probably belongs in a table.
 
 **Input and control**
+
 - `UI-53` `FilterBar` — facet chips with counts, a free-text query, and save-as-view. Filters compose; the URL always mirrors them.
 - `UI-54` `SavedViews` — user and shared views, with an indicator when the current filter set diverges from the saved one.
 - `UI-55` `ScopePicker` — selects from `authorized_scope` records only. It is not possible to type an arbitrary target anywhere in this interface. `SAFE-01`
@@ -206,6 +212,7 @@ Build these as a documented catalogue **before** building any screen, with visua
 - `UI-58` `CommandPalette` — keyboard entry to every screen, every saved view, and every global action.
 
 **Feedback**
+
 - `UI-59` `EmptyState` — explains what the screen holds and offers the one action that populates it. Never a decorative illustration. `UI-77`
 - `UI-60` `ErrorState` — renders the RFC 9457 problem detail: what happened, the machine-readable code, what to do next, and a correlation identifier the operator can quote in a support conversation. `P1-04`
 - `UI-61` `PermissionDenied` — names the permission required and who can grant it. Never a bare "access denied".
@@ -229,10 +236,11 @@ Archetype A. Default filter: open states, risk band medium and above, confidence
 - `UI-66` Multi-select enables a bulk toolbar: assign owner, set state, mark false positive, request exception, export. Bulk state changes require the same justification as single changes — no bulk path may bypass `MOD-11` or `MOD-12`.
 
 **Detail panel, four tabs:**
-1. *Overview* — title, plain-language description, affected asset with its criticality and exposure, risk explanation inline, remediation guidance from `EXT-03`, owner, SLA.
-2. *Evidence* — one `EvidenceBlock` per contributing observation, newest first, each with adapter, version, run, and raw-artifact link. `MOD-21`
-3. *History* — state transitions with actor and justification, verification results, reopen events.
-4. *Related* — other issues on the same asset, and the same issue on other assets, with a one-click filter to either.
+
+1. _Overview_ — title, plain-language description, affected asset with its criticality and exposure, risk explanation inline, remediation guidance from `EXT-03`, owner, SLA.
+2. _Evidence_ — one `EvidenceBlock` per contributing observation, newest first, each with adapter, version, run, and raw-artifact link. `MOD-21`
+3. _History_ — state transitions with actor and justification, verification results, reopen events.
+4. _Related_ — other issues on the same asset, and the same issue on other assets, with a one-click filter to either.
 
 - `UI-67` State actions sit at the panel foot, always in the same position, with the destructive-adjacent ones (false positive, risk acceptance) visually separated from the routine ones.
 - `UI-68` Requesting a risk acceptance opens a form requiring justification and expiry, and shows who will be asked to approve. The approver field makes `MOD-12` separation of duties visible before submission, not as an error afterwards.
@@ -250,6 +258,7 @@ Archetype A. Columns: asset name, addresses, OS, criticality, exposure, open iss
 Archetype A for history, Archetype B for the creation wizard.
 
 **Creation wizard, four steps** — ordinal markers permitted, this is a genuine sequence:
+
 1. Scope — `ScopePicker`, authorised records only.
 2. Profile — intrusiveness class with plain-language consequences.
 3. Schedule — now, once, or recurring, with blackout windows shown inline.
@@ -333,43 +342,43 @@ These four patterns carry the product's safety guarantees. Design them first and
 
 This is how "the panel matches the product" is verified rather than asserted. Every capability in the build prompt maps to a surface and a component. A capability with no row here is either not built or not reachable, and both are defects.
 
-| Capability | Requirement | Screen | Primary component |
-|---|---|---|---|
-| Asset discovery results | `MOD-01` | Assets | `DataTable` |
-| Asset identity, merge, split | `MOD-05` `MOD-06` | Assets → Identity | `AssetIdentityList` |
-| Address history across DHCP churn | `MOD-07` | Assets → Overview | `Timeline` |
-| Vulnerability catalogue reference | `MOD-02` | Issues → Overview | detail panel |
-| Raw observations and artifacts | `MOD-03` | Issues → Evidence; Scans → Run detail | `EvidenceBlock` |
-| Deduplicated issues | `MOD-04` `MOD-08` `MOD-09` | Issues | `DataTable` |
-| Issue lifecycle | `MOD-10`–`MOD-13` | Issues → detail foot | `StateChip`, state actions |
-| False positive handling | `MOD-11` | Issues → detail foot | `ConfirmDialog` tier 2 |
-| Risk acceptance with expiry | `MOD-12` | Issues; Settings → Exceptions | exception form, `Timeline` |
-| SLA tracking | `MOD-14` | Issues; Dashboard | SLA column, SLA tile |
-| Risk scoring | `MOD-15` `MOD-16` | Issues | `RiskBadge` |
-| Risk explainability | `MOD-17` | Issues, Dashboard | `RiskExplainer` |
-| Confidence | `MOD-19` `MOD-20` | Issues | `ConfidenceMeter` |
-| Evidence retention | `MOD-21` | Issues → Evidence | `EvidenceBlock` |
-| Scope authorisation | `SAFE-01` | Settings → Scopes; Scan wizard | attestation form, `ScopePicker` |
-| Exclusion registry | `SAFE-02` | Settings → Exclusions; Scan review; Run view | exclusion list |
-| Intrusiveness profiles | `SAFE-03` | Scan wizard | `ProfileSelector` |
-| Pacing ceilings | `SAFE-04` | Settings → Profiles; Run view | throughput readout |
-| Fragile-device handling | `SAFE-05` | Assets; Scan review; Run view | fragile marker |
-| Blackout windows | `SAFE-06` | Settings → Schedules; Scan wizard | schedule editor |
-| Global stop | `SAFE-07` | Context bar, every screen | tier 3 `ConfirmDialog` |
-| Pre-flight plan | `SAFE-08` | Scan wizard step 4 | review screen |
-| Verification scans | Step 4.6 | Issues → History; Scans | `Timeline`, `JobProgress` |
-| Remediation guidance | `EXT-03` | Issues → Overview; Reports | guidance block, worklist export |
-| Reports | `P2-19` | Reports | template picker, `JobProgress` |
-| Notifications | `P2-20` | Settings → Notifications | channel editor |
-| Audit log and chain verification | `DATA-02` `DATA-03` | Audit | `DataTable`, verification indicator |
-| Retention policy | `DATA-04` | Settings → Retention | form |
-| Backup status | `DATA-05` | Settings → Backup; System Health | status panel |
-| Vulnerability data age | `P2-08` | Context bar; System Health | data-age indicator |
-| System health | `OPS-04` | System Health | status panel |
-| Offline update import | Step 5.2 | Settings → Updates | manifest diff view |
-| Authentication and MFA | `SEC-07`–`SEC-09` | Sign in; Settings → Users | auth screens |
-| Roles and permissions | `UI-82` | Settings → Users | permission table |
-| First-run configuration | `UI-85` | Setup wizard | wizard |
+| Capability                        | Requirement                | Screen                                       | Primary component                   |
+| --------------------------------- | -------------------------- | -------------------------------------------- | ----------------------------------- |
+| Asset discovery results           | `MOD-01`                   | Assets                                       | `DataTable`                         |
+| Asset identity, merge, split      | `MOD-05` `MOD-06`          | Assets → Identity                            | `AssetIdentityList`                 |
+| Address history across DHCP churn | `MOD-07`                   | Assets → Overview                            | `Timeline`                          |
+| Vulnerability catalogue reference | `MOD-02`                   | Issues → Overview                            | detail panel                        |
+| Raw observations and artifacts    | `MOD-03`                   | Issues → Evidence; Scans → Run detail        | `EvidenceBlock`                     |
+| Deduplicated issues               | `MOD-04` `MOD-08` `MOD-09` | Issues                                       | `DataTable`                         |
+| Issue lifecycle                   | `MOD-10`–`MOD-13`          | Issues → detail foot                         | `StateChip`, state actions          |
+| False positive handling           | `MOD-11`                   | Issues → detail foot                         | `ConfirmDialog` tier 2              |
+| Risk acceptance with expiry       | `MOD-12`                   | Issues; Settings → Exceptions                | exception form, `Timeline`          |
+| SLA tracking                      | `MOD-14`                   | Issues; Dashboard                            | SLA column, SLA tile                |
+| Risk scoring                      | `MOD-15` `MOD-16`          | Issues                                       | `RiskBadge`                         |
+| Risk explainability               | `MOD-17`                   | Issues, Dashboard                            | `RiskExplainer`                     |
+| Confidence                        | `MOD-19` `MOD-20`          | Issues                                       | `ConfidenceMeter`                   |
+| Evidence retention                | `MOD-21`                   | Issues → Evidence                            | `EvidenceBlock`                     |
+| Scope authorisation               | `SAFE-01`                  | Settings → Scopes; Scan wizard               | attestation form, `ScopePicker`     |
+| Exclusion registry                | `SAFE-02`                  | Settings → Exclusions; Scan review; Run view | exclusion list                      |
+| Intrusiveness profiles            | `SAFE-03`                  | Scan wizard                                  | `ProfileSelector`                   |
+| Pacing ceilings                   | `SAFE-04`                  | Settings → Profiles; Run view                | throughput readout                  |
+| Fragile-device handling           | `SAFE-05`                  | Assets; Scan review; Run view                | fragile marker                      |
+| Blackout windows                  | `SAFE-06`                  | Settings → Schedules; Scan wizard            | schedule editor                     |
+| Global stop                       | `SAFE-07`                  | Context bar, every screen                    | tier 3 `ConfirmDialog`              |
+| Pre-flight plan                   | `SAFE-08`                  | Scan wizard step 4                           | review screen                       |
+| Verification scans                | Step 4.6                   | Issues → History; Scans                      | `Timeline`, `JobProgress`           |
+| Remediation guidance              | `EXT-03`                   | Issues → Overview; Reports                   | guidance block, worklist export     |
+| Reports                           | `P2-19`                    | Reports                                      | template picker, `JobProgress`      |
+| Notifications                     | `P2-20`                    | Settings → Notifications                     | channel editor                      |
+| Audit log and chain verification  | `DATA-02` `DATA-03`        | Audit                                        | `DataTable`, verification indicator |
+| Retention policy                  | `DATA-04`                  | Settings → Retention                         | form                                |
+| Backup status                     | `DATA-05`                  | Settings → Backup; System Health             | status panel                        |
+| Vulnerability data age            | `P2-08`                    | Context bar; System Health                   | data-age indicator                  |
+| System health                     | `OPS-04`                   | System Health                                | status panel                        |
+| Offline update import             | Step 5.2                   | Settings → Updates                           | manifest diff view                  |
+| Authentication and MFA            | `SEC-07`–`SEC-09`          | Sign in; Settings → Users                    | auth screens                        |
+| Roles and permissions             | `UI-82`                    | Settings → Users                             | permission table                    |
+| First-run configuration           | `UI-85`                    | Setup wizard                                 | wizard                              |
 
 ---
 

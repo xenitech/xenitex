@@ -404,7 +404,11 @@ function scoreIssue(
   confidence: number,
   weights: RiskScoringWeights,
   policyVersion: number,
-): { totalScore: number; band: ReturnType<typeof computeRiskScore>['band']; breakdown: ScoreFactorContribution[] } {
+): {
+  totalScore: number;
+  band: ReturnType<typeof computeRiskScore>['band'];
+  breakdown: ScoreFactorContribution[];
+} {
   const policy: DomainRiskScoringPolicy = {
     version: policyVersion,
     weights,
@@ -591,7 +595,10 @@ export function applyAssetRiskRatings(
   vulnerabilities: readonly Vulnerability[],
 ): void {
   const knownExploitedByVulnId = new Map(vulnerabilities.map((v) => [v.id, v.knownExploited]));
-  const openIssuesByAssetId = new Map<string, { issueId: string; riskScore: number; knownExploited: boolean }[]>();
+  const openIssuesByAssetId = new Map<
+    string,
+    { issueId: string; riskScore: number; knownExploited: boolean }[]
+  >();
   for (const issue of issues) {
     if (!['new', 'triaged', 'in_progress', 'reopened'].includes(issue.state)) continue;
     const list = openIssuesByAssetId.get(issue.assetId) ?? [];
