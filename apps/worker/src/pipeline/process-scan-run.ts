@@ -374,6 +374,9 @@ interface UpsertIssueInput {
   readonly exploitProbability: number | null;
   readonly knownExploited: boolean;
   readonly confidence: number;
+  /** MOD-21: why the matcher believes this CVE applies. Null for findings with no CVE. */
+  readonly matchExplanation?: string | undefined;
+  readonly matchReasons?: readonly string[] | undefined;
   readonly riskPolicy: RiskScoringPolicy;
 }
 
@@ -482,6 +485,8 @@ async function upsertIssue(db: Kysely<DB>, input: UpsertIssueInput): Promise<voi
       risk_score: String(riskResult.totalScore) as never,
       risk_score_policy_version: input.riskPolicy.version,
       confidence: String(input.confidence) as never,
+      match_explanation: input.matchExplanation ?? null,
+      match_reasons: (input.matchReasons ?? []) as never,
       state: 'new',
     })
     .execute();
@@ -582,8 +587,7 @@ async function matchCatalogue(
       explanation: result.explanation,
       cvssBaseScore: row.cvss_base_score === null ? null : Number(row.cvss_base_score),
       cvssVersion: row.cvss_version,
-      exploitProbability:
-        row.exploit_probability === null ? null : Number(row.exploit_probability),
+      exploitProbability: row.exploit_probability === null ? null : Number(row.exploit_probability),
       knownExploited: row.known_exploited,
     });
   }
@@ -651,32 +655,33 @@ async function processObservations(
         .where('id', '=', assetId)
         .executeTakeFirstOrThrow();
 
-      for (const match of matchKnownVulnerabilities(product, serviceName, version)) {
-        const vulnRow = await db
-          .selectFrom('vulnerabilities')
-          .selectAll()
-          .where('vuln_identifier', '=', match.seed.vulnIdentifier)
-          .executeTakeFirst();
-        if (!vulnRow) continue; // seed migration (0010) not applied -- skip rather than fabricate a catalogue row at runtime
+      for (const match of await matchCatalogue(db, { product, serviceName, version })) {
         await upsertIssue(db, {
           assetId,
           assetCriticality: asset.business_criticality,
           assetExposure: asset.exposure_classification,
           observationRowId,
-          vulnerabilityRowId: vulnRow.id,
-          fingerprintVulnIdentifier: match.seed.vulnIdentifier,
+          vulnerabilityRowId: match.vulnerabilityId,
+          fingerprintVulnIdentifier: match.vulnIdentifier,
           port: obs.targetPort,
           protocol: obs.targetProtocol,
           service: serviceName,
           product,
           version,
-          cvssBaseScore: vulnRow.cvss_base_score === null ? null : Number(vulnRow.cvss_base_score),
-          cvssVersion: vulnRow.cvss_version,
-          exploitProbability:
-            vulnRow.exploit_probability === null ? null : Number(vulnRow.exploit_probability),
-          knownExploited: vulnRow.known_exploited,
-          // MOD-19: version-string inference is explicitly low confidence.
-          confidence: 0.35,
+          cvssBaseScore: match.cvssBaseScore,
+          cvssVersion: match.cvssVersion,
+          exploitProbability: match.exploitProbability,
+          knownExploited: match.knownExploited,
+          // MOD-19, derived from the QUALITY of the match rather than
+          // hard-coded. The previous flat 0.35 told a reviewer nothing:
+          // an exact version inside a published affected range and a
+          // product-name-only guess with no version at all were presented
+          // as equally (un)certain. Now a clean range hit is 0.70, a
+          // possible distribution backport 0.40, and an unreadable
+          // version 0.25 — and the reason is carried with it.
+          confidence: match.confidence,
+          matchExplanation: match.explanation,
+          matchReasons: match.reasons,
           riskPolicy,
         });
       }

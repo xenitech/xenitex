@@ -2126,6 +2126,10 @@ export interface components {
             riskScorePolicyVersion: number;
             confidence: number;
             confidenceLabel: components["schemas"]["ConfidenceLabel"];
+            /** @description MOD-21 — plain-language statement of why this CVE was matched to this service, so the confidence value can be audited rather than merely trusted. Null for a MOD-04 configuration/exposure issue, which has no CVE to match. */
+            matchExplanation?: string | null;
+            /** @description Machine-readable match reasons. `vendor_revision_backport_possible` in particular means the observed version carries a distribution revision, so the host may already carry a backported fix — the UI marks these distinctly rather than presenting them as confirmed. */
+            matchReasons?: ("exact_version_in_range" | "version_pinned_exact" | "vendor_revision_backport_possible" | "version_unparseable" | "range_unparseable" | "product_only_no_version")[];
             state: components["schemas"]["IssueState"];
             contributingObservationIds: string[];
             ownerUserId?: string | null;

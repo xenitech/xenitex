@@ -39,6 +39,8 @@ export interface IssueRow {
   cve_ids: string[] | null;
   vuln_identifier: string | null;
   updated_at: Date | string;
+  match_explanation: string | null;
+  match_reasons: string[] | null;
 }
 
 /**
@@ -90,6 +92,8 @@ export function issueSelect(db: ApiDependencies['db']) {
       'issues.risk_score_policy_version',
       'issues.confidence',
       'issues.confidence_label',
+      'issues.match_explanation',
+      'issues.match_reasons',
       'issues.state',
       'issues.owner_user_id',
       'issues.due_date',
@@ -129,6 +133,8 @@ export function toIssue(row: IssueRow) {
     riskScorePolicyVersion: row.risk_score_policy_version,
     confidence: Number(row.confidence),
     confidenceLabel: row.confidence_label,
+    matchExplanation: row.match_explanation,
+    matchReasons: row.match_reasons ?? [],
     state: row.state,
     contributingObservationIds: [] as string[],
     ownerUserId: row.owner_user_id,

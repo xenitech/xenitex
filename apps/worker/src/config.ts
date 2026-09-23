@@ -5,6 +5,8 @@ export interface WorkerConfig {
   readonly pollIntervalMs: number;
   /** SEC-03: per-job working directory root (tmpfs in deploy/compose/docker-compose.yml). */
   readonly jobWorkingDirectoryRoot: string;
+  /** DATA-05: where encrypted backup archives are written. A dedicated volume, never the blob store. */
+  readonly backupRoot: string;
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
@@ -15,5 +17,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
       ? Number.parseInt(env.WORKER_POLL_INTERVAL_MS, 10)
       : 5000,
     jobWorkingDirectoryRoot: env.JOB_WORKING_DIRECTORY_ROOT ?? '/var/run/xenitex-job',
+    backupRoot: env.BACKUP_ROOT ?? '/var/lib/xenitex/backups',
   };
 }

@@ -3114,6 +3114,31 @@ components:
         riskScorePolicyVersion: { type: integer }
         confidence: { type: number, minimum: 0, maximum: 1 }
         confidenceLabel: { $ref: '#/components/schemas/ConfidenceLabel' }
+        matchExplanation:
+          oneOf: [{ type: string }, { type: 'null' }]
+          description: >-
+            MOD-21 — plain-language statement of why this CVE was matched to
+            this service, so the confidence value can be audited rather than
+            merely trusted. Null for a MOD-04 configuration/exposure issue,
+            which has no CVE to match.
+        matchReasons:
+          type: array
+          items:
+            type: string
+            enum:
+              [
+                exact_version_in_range,
+                version_pinned_exact,
+                vendor_revision_backport_possible,
+                version_unparseable,
+                range_unparseable,
+                product_only_no_version,
+              ]
+          description: >-
+            Machine-readable match reasons. `vendor_revision_backport_possible`
+            in particular means the observed version carries a distribution
+            revision, so the host may already carry a backported fix — the UI
+            marks these distinctly rather than presenting them as confirmed.
         state: { $ref: '#/components/schemas/IssueState' }
         contributingObservationIds: { type: array, items: { type: string } }
         ownerUserId: { oneOf: [{ type: string }, { type: 'null' }] }

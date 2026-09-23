@@ -103,9 +103,11 @@ services:
   blobstore-init:
     image: alpine:3.20
     user: root
-    command: ['chown', '-R', '10001:10001', '/var/lib/xenitex/blob-store']
+    command:
+      ['chown', '-R', '10001:10001', '/var/lib/xenitex/blob-store', '/var/lib/xenitex/backups']
     volumes:
       - blobstore:/var/lib/xenitex/blob-store
+      - backups:/var/lib/xenitex/backups
     restart: 'no'
 
   # SEC-06: TLS on by default, with a self-signed certificate generated at
@@ -165,6 +167,9 @@ services:
       # packages/db for why this lives in a shared volume rather than
       # either container's own filesystem.
       - blobstore:/var/lib/xenitex/blob-store
+      # Read-only: the API never writes archives (the worker does), but the
+      # restore CLI runs in this container and must be able to read one.
+      - backups:/var/lib/xenitex/backups:ro
     networks:
       - internal
       - edge
@@ -220,6 +225,10 @@ services:
     # added back here.
     environment:
       BLOB_STORE_ROOT: '/var/lib/xenitex/blob-store'
+      # DATA-05: encrypted archives land on their own volume, never inside
+      # the blob store — a backup that lives in the thing it is backing up
+      # is not a backup.
+      BACKUP_ROOT: '/var/lib/xenitex/backups'
     env_file:
       - ./.env
     depends_on:
@@ -231,6 +240,7 @@ services:
         condition: service_completed_successfully
     volumes:
       - blobstore:/var/lib/xenitex/blob-store
+      - backups:/var/lib/xenitex/backups
     networks:
       - internal
       - scan_egress
@@ -314,3 +324,7 @@ volumes:
   # SEC-06: holds server.crt/server.key. Survives container replacement, so
   # a customer-installed certificate is not lost on upgrade.
   tls:
+  # DATA-05: encrypted backup archives. Deliberately a separate volume from
+  # `blobstore` so an operator can mount it elsewhere, copy it off the
+  # appliance, or put it on different storage without touching evidence.
+  backups:

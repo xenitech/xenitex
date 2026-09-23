@@ -253,6 +253,9 @@ export const en = {
       evidenceCount_one: '{{count}} observation',
       evidenceCount_other: '{{count}} observations',
       remediation: 'Remediation guidance',
+      whyMatched: 'Why this was matched',
+      backportWarning:
+        'This version carries a distribution revision. Many distributions backport security fixes without changing the upstream version number, so this host may already be patched — confirm against the installed package before acting.',
       remediationSteps: 'Steps',
       references: 'References',
       noRemediation: 'No remediation guidance is available for this issue yet.',

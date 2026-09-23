@@ -360,6 +360,14 @@ export interface Issues {
   id: string;
   last_seen: Generated<Timestamp>;
   last_verified_at: Timestamp | null;
+  /**
+   * Plain-language statement of why this CVE was matched to this service (MOD-21). Null for findings with no CVE.
+   */
+  match_explanation: string | null;
+  /**
+   * Machine-readable match reasons; the UI branches on these to mark a finding as a possible backport rather than a confirmed hit.
+   */
+  match_reasons: Generated<string[]>;
   owner_user_id: string | null;
   port: number | null;
   product_untrusted: string | null;

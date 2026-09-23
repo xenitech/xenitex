@@ -7,10 +7,7 @@ import { RiskExplainer } from './RiskExplainer.js';
 function renderExplainer(factors: unknown, version = 2) {
   return render(
     <I18nextProvider i18n={i18next}>
-      <RiskExplainer
-        factors={factors as never}
-        scoringPolicyVersion={version}
-      />
+      <RiskExplainer factors={factors as never} scoringPolicyVersion={version} />
     </I18nextProvider>,
   );
 }
@@ -76,7 +73,12 @@ describe('RiskExplainer (MOD-17)', () => {
   it('survives rows with non-finite numbers rather than printing NaN', () => {
     const broken = [
       { factor: 'cvssBaseScore', multiplier: Number.NaN, runningScore: 10, inputDescription: 'x' },
-      { factor: 'confidence', multiplier: 1, runningScore: Number.POSITIVE_INFINITY, inputDescription: 'y' },
+      {
+        factor: 'confidence',
+        multiplier: 1,
+        runningScore: Number.POSITIVE_INFINITY,
+        inputDescription: 'y',
+      },
     ];
     expect(() => renderExplainer(broken)).not.toThrow();
     expect(screen.queryByText(/NaN/)).toBeNull();

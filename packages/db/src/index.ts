@@ -8,3 +8,4 @@ export {
   type AuditEntryInput,
   type AuditChainVerificationResult,
 } from './audit-log.js';
+export * from './backup-archive.js';

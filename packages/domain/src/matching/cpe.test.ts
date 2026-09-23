@@ -78,6 +78,12 @@ describe('parseVersion', () => {
     assert.deepEqual(parseVersion('1:2.4.49').segments, [2, 4, 49]);
   });
 
+  it("parses OpenSSL's multi-letter releases", () => {
+    const parsed = parseVersion('1.0.2zq');
+    assert.deepEqual(parsed.segments, [1, 0, 2]);
+    assert.equal(parsed.letter, 'zq');
+  });
+
   it('reports unparseable rather than guessing', () => {
     for (const bad of ['', 'unknown', 'Debian', '(Ubuntu)', null, undefined]) {
       assert.equal(parseVersion(bad as never).parsed, false, String(bad));
@@ -98,9 +104,16 @@ describe('compareVersions', () => {
     assert.equal(cmp('2.4', '2.4.0'), 0);
   });
 
-  it('orders OpenSSL letter releases', () => {
+  it('orders OpenSSL letter releases, including the za..zz continuation', () => {
     assert.equal(cmp('1.0.2k', '1.0.2j'), 1);
     assert.equal(cmp('1.0.2', '1.0.2a'), -1);
+    // After 1.0.2z OpenSSL continues 1.0.2za, 1.0.2zb ... 1.0.2zz. These
+    // are real releases (1.0.2zq, 1.1.1zh) and they must sort after the
+    // single-letter ones, not before.
+    assert.equal(cmp('1.0.2za', '1.0.2z'), 1);
+    assert.equal(cmp('1.0.2zq', '1.0.2zh'), 1);
+    assert.equal(cmp('1.0.2zh', '1.0.2zq'), -1);
+    assert.equal(cmp('1.0.2b', '1.0.2za'), -1);
   });
 
   it('sorts a pre-release before its release', () => {
@@ -166,7 +179,10 @@ describe('product name normalisation', () => {
 });
 
 describe('matchServiceToCpe', () => {
-  const apacheCpe = { cpe: 'cpe:2.3:a:apache:http_server:*:*:*:*:*:*:*:*', versionRange: '>=2.4.49 <2.4.51' };
+  const apacheCpe = {
+    cpe: 'cpe:2.3:a:apache:http_server:*:*:*:*:*:*:*:*',
+    versionRange: '>=2.4.49 <2.4.51',
+  };
 
   it('matches an affected version and says why', () => {
     const result = matchServiceToCpe(
@@ -241,7 +257,8 @@ describe('matchServiceToCpe', () => {
       0.7,
     );
     assert.equal(
-      matchServiceToCpe({ product: 'Apache', serviceName: null, version: '2.4.50' }, pinned).matched,
+      matchServiceToCpe({ product: 'Apache', serviceName: null, version: '2.4.50' }, pinned)
+        .matched,
       false,
     );
   });
@@ -255,12 +272,7 @@ describe('matchServiceToCpe', () => {
   });
 
   it('survives hostile and malformed banner input without throwing (SEC-17)', () => {
-    const hostile = [
-      '<script>alert(1)</script>',
-      "'; DROP TABLE issues; --",
-      ' ',
-      'A'.repeat(5000),
-    ];
+    const hostile = ['<script>alert(1)</script>', "'; DROP TABLE issues; --", ' ', 'A'.repeat(5000)];
     for (const value of hostile) {
       assert.doesNotThrow(() =>
         matchServiceToCpe({ product: value, serviceName: value, version: value }, apacheCpe),

@@ -105,6 +105,21 @@ export function IssueDetailPanel({ issueId }: { readonly issueId: string }) {
             </p>
           </div>
 
+          {issue.matchExplanation && (
+            <div>
+              <h3 className={styles.sectionTitle}>{t('issues.detail.whyMatched')}</h3>
+              {/* MOD-20/QA-00: a possible backport is called out distinctly
+                  rather than being folded in with confirmed matches. The
+                  whole point of carrying match reasons through is that a
+                  reviewer can see WHY the confidence is what it is instead
+                  of being handed a number to trust. */}
+              {issue.matchReasons?.includes('vendor_revision_backport_possible') && (
+                <p className={styles.backportWarning}>{t('issues.detail.backportWarning')}</p>
+              )}
+              <p className={styles.muted}>{issue.matchExplanation}</p>
+            </div>
+          )}
+
           <div>
             <h3 className={styles.sectionTitle}>
               {t('components.riskExplainer.version', { version: issue.riskScorePolicyVersion })}

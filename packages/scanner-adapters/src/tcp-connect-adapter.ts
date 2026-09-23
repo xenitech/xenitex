@@ -259,40 +259,120 @@ async function mapWithConcurrency<T, R>(
   return results;
 }
 
-function splitProductVersion(text: string): [string, string | null] {
+export function splitProductVersion(text: string): [string, string | null] {
   const match = /^([A-Za-z][\w.-]*)[/_]([\w.]+)/.exec(text);
   if (!match) return [text, null];
   return [match[1]!, match[2]!];
 }
 
-interface ParsedBanner {
+export interface ParsedBanner {
   readonly serviceName: string | null;
   readonly product: string | null;
   readonly version: string | null;
   readonly extraInfo: string | null;
+  /**
+   * The remaining fields exist because a banner is not only a fingerprint
+   * of what software is running — the banner ITSELF can be the finding.
+   * `matchConfigurationFindings` (known-vulnerability-seed.ts) checks these
+   * for exactly that: a plaintext HTTP response that never redirects to
+   * TLS, or an HTTP Basic auth prompt issued over that same unencrypted
+   * connection, are both configuration weaknesses visible in the banner
+   * alone — no CVE, no version match, just what the service chose to say.
+   */
+  readonly httpStatusLine: string | null;
+  readonly httpLocation: string | null;
+  readonly httpWwwAuthenticate: string | null;
+  /**
+   * True only when the captured bytes contain the header/body separator
+   * (a blank line), i.e. we plausibly have the WHOLE header block rather
+   * than a chunk truncated by MAX_BANNER_BYTES or a fragmented TCP read.
+   * Findings that reason from a header's ABSENCE (none exist yet, but this
+   * is here so one never has to guess) must check this first — absence of
+   * evidence in a truncated capture is not evidence of absence.
+   */
+  readonly httpHeadersComplete: boolean;
 }
 
 /** Structured extraction only (SEC-17/P2-04/P2-05) — every returned field is later wrapped Untrusted<T> before it leaves parse(), never rendered or logged raw. */
-function parseBanner(port: number, bannerBase64: string | null): ParsedBanner {
+const EMPTY_HTTP_FIELDS = {
+  httpStatusLine: null,
+  httpLocation: null,
+  httpWwwAuthenticate: null,
+  httpHeadersComplete: false,
+} as const;
+
+/**
+ * Pulled out of `parseBanner` so it runs over the SAME bytes already
+ * captured for product/version extraction — no new network behaviour,
+ * just reading more of a response the adapter already asked for and
+ * received. Only meaningful when `text` looks like an HTTP response
+ * (starts with a status line); everything else gets the empty shape.
+ */
+export function parseHttpResponseFields(text: string): Pick<
+  ParsedBanner,
+  'httpStatusLine' | 'httpLocation' | 'httpWwwAuthenticate' | 'httpHeadersComplete'
+> {
+  const statusLine = /^(HTTP\/\d\.\d \d{3}[^\r\n]*)/.exec(text);
+  if (!statusLine) return EMPTY_HTTP_FIELDS;
+
+  // A bare "\n\n" is accepted alongside the correct "\r\n\r\n": some
+  // embedded HTTP stacks (routers, IoT management UIs, print servers) are
+  // known to emit LF-only line endings against spec, and rejecting those
+  // would silently blind the header-absence checks on exactly the class of
+  // device most likely to ship a genuinely broken HTTP implementation.
+  const headersComplete = /\r?\n\r?\n/.test(text);
+
+  const location = /^Location:\s*([^\r\n]+)/im.exec(text);
+  const wwwAuthenticate = /^WWW-Authenticate:\s*([^\r\n]+)/im.exec(text);
+
+  return {
+    httpStatusLine: statusLine[1]!.trim().slice(0, 300),
+    httpLocation: location ? location[1]!.trim().slice(0, 300) : null,
+    httpWwwAuthenticate: wwwAuthenticate ? wwwAuthenticate[1]!.trim().slice(0, 300) : null,
+    httpHeadersComplete: headersComplete,
+  };
+}
+
+export function parseBanner(port: number, bannerBase64: string | null): ParsedBanner {
   const serviceNameGuess = PORT_SERVICE_NAMES[port] ?? null;
   if (!bannerBase64)
-    return { serviceName: serviceNameGuess, product: null, version: null, extraInfo: null };
+    return {
+      serviceName: serviceNameGuess,
+      product: null,
+      version: null,
+      extraInfo: null,
+      ...EMPTY_HTTP_FIELDS,
+    };
   const text = Buffer.from(bannerBase64, 'base64').toString('utf8');
   const firstLine = (text.split(/\r?\n/)[0] ?? '').trim().slice(0, 300);
+  const httpFields = parseHttpResponseFields(text);
 
   const ssh = /^SSH-\d\.\d-(\S+)/.exec(firstLine);
   if (ssh) {
     const [product, version] = splitProductVersion(ssh[1]!);
-    return { serviceName: 'ssh', product, version, extraInfo: firstLine };
+    return { serviceName: 'ssh', product, version, extraInfo: firstLine, ...httpFields };
   }
 
   const ftp = /\((vsFTPd|ProFTPD|Pure-FTPd)\s+([\w.]+)\)/i.exec(text);
-  if (ftp) return { serviceName: 'ftp', product: ftp[1]!, version: ftp[2]!, extraInfo: firstLine };
+  if (ftp)
+    return {
+      serviceName: 'ftp',
+      product: ftp[1]!,
+      version: ftp[2]!,
+      extraInfo: firstLine,
+      ...httpFields,
+    };
 
   const httpServer = /^Server:\s*([^\r\n]+)/im.exec(text);
   if (httpServer) {
     const [product, version] = splitProductVersion(httpServer[1]!.trim().split(/\s+/)[0] ?? '');
-    return { serviceName: serviceNameGuess ?? 'http', product, version, extraInfo: firstLine };
+    return {
+      serviceName: serviceNameGuess ?? 'http',
+      product,
+      version,
+      extraInfo: firstLine,
+      ...httpFields,
+    };
   }
 
   const ircd = /UnrealIRCd[- ]?v?([\w.]+)?/i.exec(text);
@@ -302,6 +382,7 @@ function parseBanner(port: number, bannerBase64: string | null): ParsedBanner {
       product: 'UnrealIRCd',
       version: ircd[1] ?? null,
       extraInfo: firstLine,
+      ...httpFields,
     };
   }
 
@@ -310,6 +391,7 @@ function parseBanner(port: number, bannerBase64: string | null): ParsedBanner {
     product: null,
     version: null,
     extraInfo: firstLine || null,
+    ...httpFields,
   };
 }
 
@@ -486,12 +568,29 @@ export class TcpConnectDiscoveryAdapter implements ScannerAdapter {
           targetPort: port.port,
           targetProtocol: 'tcp',
           resolvedAssetId: null,
-          extractedAttributes: { hostState: 'up', portState: 'open' },
+          extractedAttributes: {
+            hostState: 'up',
+            portState: 'open',
+            // A FACT about the capture (did we get the whole header block),
+            // not attacker-supplied text — so it belongs here, not in
+            // untrustedEvidence. matchConfigurationFindings gates every
+            // "header is absent" check on this, so a truncated capture
+            // never gets reported as a missing header.
+            httpHeadersComplete: parsed.httpHeadersComplete,
+          },
           untrustedEvidence: {
             ...(parsed.serviceName ? { serviceName: untrusted(parsed.serviceName) } : {}),
             ...(parsed.product ? { product: untrusted(parsed.product) } : {}),
             ...(parsed.version ? { version: untrusted(parsed.version) } : {}),
             ...(parsed.extraInfo ? { extraInfo: untrusted(parsed.extraInfo) } : {}),
+            // The banner CAN be the finding, not just a fingerprint of one —
+            // see matchConfigurationFindings for what these three feed:
+            // no-TLS-redirect, and Basic auth prompted over cleartext.
+            ...(parsed.httpStatusLine ? { httpStatusLine: untrusted(parsed.httpStatusLine) } : {}),
+            ...(parsed.httpLocation ? { httpLocation: untrusted(parsed.httpLocation) } : {}),
+            ...(parsed.httpWwwAuthenticate
+              ? { httpWwwAuthenticate: untrusted(parsed.httpWwwAuthenticate) }
+              : {}),
           },
           observedAt,
         });

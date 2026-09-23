@@ -255,6 +255,9 @@ export const fa: TranslationSchema = {
       evidenceCount_one: '{{count}} مشاهده',
       evidenceCount_other: '{{count}} مشاهده',
       remediation: 'راهنمای رفع مشکل',
+      whyMatched: 'چرا این مورد تطبیق داده شد',
+      backportWarning:
+        'این نسخه یک شماره بازبینی توزیع دارد. بسیاری از توزیع‌ها اصلاحیه‌های امنیتی را بدون تغییر شماره نسخه بالادست اعمال می‌کنند، پس ممکن است این میزبان از قبل وصله شده باشد — پیش از اقدام، نسخه بسته نصب‌شده را بررسی کنید.',
       remediationSteps: 'مراحل',
       references: 'منابع',
       noRemediation: 'هنوز راهنمای رفع مشکلی برای این مورد در دسترس نیست.',

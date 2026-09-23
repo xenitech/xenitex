@@ -76,7 +76,11 @@ export function parseCpe23(cpe: string): ParsedCpe | null {
 export interface ParsedVersion {
   /** Upstream numeric components, e.g. `2.4.49` -> [2, 4, 49]. */
   readonly segments: readonly number[];
-  /** Trailing letter on the last upstream segment, e.g. OpenSSL `1.0.2k` -> 'k'. */
+  /**
+   * Trailing letter sequence on the last upstream segment: OpenSSL `1.0.2k`
+   * -> 'k', and after `1.0.2z` it continues `1.0.2za`…`1.0.2zz`, so this is
+   * not always a single character.
+   */
   readonly letter: string | null;
   /**
    * A pre-release marker (`-rc1`, `-beta2`, `-alpha`). Sorts BEFORE the
@@ -119,7 +123,13 @@ export function parseVersion(raw: string | null | undefined): ParsedVersion {
   const upstream = revisionMatch ? revisionMatch[1]! : text;
   const remainder = revisionMatch ? revisionMatch[2]! : '';
 
-  const upstreamMatch = /^v?(\d+(?:\.\d+)*)([a-z]?)$/i.exec(upstream);
+  // Up to three trailing letters: OpenSSL exhausts a–z and continues with
+  // za–zz (real releases include 1.0.2zq and 1.1.1zh). A single-letter
+  // pattern rejected those outright, and an unparseable version drops the
+  // match to 0.25 "cannot evaluate" — so OpenSSL, one of the most
+  // security-relevant libraries there is, silently got the product's
+  // weakest verdict on its later releases.
+  const upstreamMatch = /^v?(\d+(?:\.\d+)*)([a-z]{1,3})?$/i.exec(upstream);
   if (!upstreamMatch) return UNPARSEABLE;
 
   const segments = upstreamMatch[1]!.split('.').map((n) => Number.parseInt(n, 10));
@@ -152,7 +162,15 @@ export function compareVersions(a: ParsedVersion, b: ParsedVersion): number | nu
   }
   const letterA = a.letter ?? '';
   const letterB = b.letter ?? '';
-  if (letterA !== letterB) return letterA < letterB ? -1 : 1;
+  if (letterA !== letterB) {
+    // OpenSSL's scheme runs a…z then za…zz, so a shorter suffix always
+    // precedes a longer one; within the same length it is plain lexical
+    // order. Comparing 'z' against 'za' lexically happens to give the same
+    // answer, but relying on that coincidence would break the moment a
+    // three-letter suffix appeared.
+    if (letterA.length !== letterB.length) return letterA.length < letterB.length ? -1 : 1;
+    return letterA < letterB ? -1 : 1;
+  }
   // A pre-release sorts before the release it precedes.
   if (a.preRelease && !b.preRelease) return -1;
   if (!a.preRelease && b.preRelease) return 1;
@@ -235,7 +253,7 @@ const PRODUCT_ALIASES: Readonly<Record<string, readonly string[]>> = {
   httpd: ['http_server', 'apache', 'httpd'],
   nginx: ['nginx'],
   openssh: ['openssh'],
-  'openssh_server': ['openssh'],
+  openssh_server: ['openssh'],
   vsftpd: ['vsftpd'],
   proftpd: ['proftpd'],
   'pure-ftpd': ['pure-ftpd', 'pure_ftpd'],
@@ -268,7 +286,9 @@ export function normaliseProductName(raw: string | null | undefined): string | n
 }
 
 /** Candidate CPE product names for an observed banner product, most specific first. */
-export function candidateProductNames(observedProduct: string | null | undefined): readonly string[] {
+export function candidateProductNames(
+  observedProduct: string | null | undefined,
+): readonly string[] {
   const normalised = normaliseProductName(observedProduct);
   if (!normalised) return [];
   const aliases = PRODUCT_ALIASES[normalised];

@@ -616,25 +616,34 @@ export async function registerOpsRoutes(
     const cached = await getIdempotentResponse(deps.redis, 'createBackup', idempotencyKey);
     if (cached) return reply.code(cached.status).send(cached.body);
 
-    // DATA-05 requires one consistent encrypted archive of database + blob
-    // store + configuration, with restore exercised and RPO/RTO measured in
-    // CI. That real archival/encryption/restore pipeline does not exist yet
-    // -- this endpoint is deliberately honest about that rather than
-    // silently faking success: it records a 'failed' attempt with the real
-    // reason, instead of writing a BackupRecord that claims a backup
-    // completed when nothing was actually archived anywhere.
+    // DATA-05. The archive itself is produced by apps/worker
+    // (process-backup.ts) — dumping every table plus the blob store is not
+    // something to do inside an HTTP handler, and ADR 0006 requires a
+    // long-running operation to return a job resource and be polled.
+    // This records the intent; the worker fills in the location, size and
+    // checksum, or the failure reason.
     const backupId = newId();
     await db
       .insertInto('backup_records')
       .values({
         id: backupId,
         started_at: new Date(),
-        completed_at: new Date(),
-        status: 'failed',
+        status: 'running',
         archive_location: '',
         encrypted: true,
       })
       .execute();
+    await appendAuditEntry(db, {
+      actorUserId: currentUser.userId,
+      sessionId: currentUser.sessionId,
+      sourceAddress: sourceAddressOf(request),
+      action: 'backup.requested',
+      targetType: 'backup_record',
+      targetId: backupId,
+      beforeState: null,
+      afterState: null,
+      outcome: 'success',
+    });
     const record = await db
       .selectFrom('backup_records')
       .selectAll()
