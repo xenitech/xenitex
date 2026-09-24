@@ -122,6 +122,7 @@ export const fa: TranslationSchema = {
     skipToContent: 'رفتن به محتوای اصلی',
   },
   auth: {
+    tagline: 'کشف · تحلیل · واکنش',
     signIn: {
       title: 'ورود',
       email: 'ایمیل',

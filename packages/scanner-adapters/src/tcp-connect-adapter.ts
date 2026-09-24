@@ -308,7 +308,9 @@ const EMPTY_HTTP_FIELDS = {
  * received. Only meaningful when `text` looks like an HTTP response
  * (starts with a status line); everything else gets the empty shape.
  */
-export function parseHttpResponseFields(text: string): Pick<
+export function parseHttpResponseFields(
+  text: string,
+): Pick<
   ParsedBanner,
   'httpStatusLine' | 'httpLocation' | 'httpWwwAuthenticate' | 'httpHeadersComplete'
 > {

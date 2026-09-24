@@ -1,0 +1,56 @@
+.page {
+  position: relative;
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-9) var(--space-7);
+  overflow: hidden;
+  background: var(--color-surface);
+}
+
+/**
+ * A single, static, very low-opacity radial glow behind the brand mark —
+ * the one deliberate, scoped exception to UI-10's "no decorative glow" rule
+ * for exactly the reason the rule exists: nothing data-dense ever shares
+ * this screen with it. It never animates and never appears once `children`
+ * (the app itself) is what's on screen.
+ */
+.glow {
+  position: absolute;
+  top: -20%;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 900px;
+  height: 900px;
+  max-width: 140vw;
+  max-height: 140vw;
+  background: radial-gradient(circle, var(--color-accent-subtle) 0%, transparent 65%);
+  opacity: 0.6;
+  pointer-events: none;
+}
+
+.content {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  max-width: 640px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.tagline {
+  margin: var(--space-3) 0 var(--space-8);
+  font-size: var(--font-size-xs);
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--color-ink-subtle);
+}
+
+/* The card/page each screen renders as `children` needs full width of this
+   column to honour its own max-width (400px for the auth `.card`, 640px for
+   the setup wizard's `.page`) without a third competing constraint here. */
+.content > :last-child {
+  width: 100%;
+}

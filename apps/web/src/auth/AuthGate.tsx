@@ -1,5 +1,6 @@
 import { useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
+import { AuthLayout } from './AuthLayout.js';
 import { SignInScreen } from './SignInScreen.js';
 import { MfaChallengeScreen } from './MfaChallengeScreen.js';
 import { MfaEnrollScreen } from './MfaEnrollScreen.js';
@@ -21,24 +22,34 @@ export function AuthGate({ children }: { readonly children: ReactNode }) {
 
   if (isLoading) {
     return (
-      <div role="status" aria-live="polite" style={{ padding: 'var(--space-9)' }}>
-        {t('common.loading')}
-      </div>
+      <AuthLayout>
+        <div role="status" aria-live="polite">
+          {t('common.loading')}
+        </div>
+      </AuthLayout>
     );
   }
 
   if (!isSignedIn) {
-    return challengeToken ? (
-      <MfaChallengeScreen challengeToken={challengeToken} />
-    ) : (
-      <SignInScreen onMfaRequired={setChallengeToken} />
+    return (
+      <AuthLayout>
+        {challengeToken ? (
+          <MfaChallengeScreen challengeToken={challengeToken} />
+        ) : (
+          <SignInScreen onMfaRequired={setChallengeToken} />
+        )}
+      </AuthLayout>
     );
   }
 
   const user = currentUser!.user;
 
   if (user.mustChangePassword) {
-    return <ForcedPasswordChangeScreen />;
+    return (
+      <AuthLayout>
+        <ForcedPasswordChangeScreen />
+      </AuthLayout>
+    );
   }
 
   // SEC-09/SEC-13. The SERVER decides whether enrolment is required — it
@@ -50,7 +61,11 @@ export function AuthGate({ children }: { readonly children: ReactNode }) {
   // whether an account is gated, which is exactly how the old
   // client-side override managed to disable the control outright.
   if (hasCapability('auth.mfaEnrollmentRequired') && !user.mfaEnabled) {
-    return <MfaEnrollScreen />;
+    return (
+      <AuthLayout>
+        <MfaEnrollScreen />
+      </AuthLayout>
+    );
   }
 
   return <>{children}</>;

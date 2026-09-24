@@ -7,6 +7,7 @@ import { useSession } from '../auth/SessionContext.js';
 import { SUPPORTED_LANGUAGES, storeLanguage, type SupportedLanguage } from '../i18n/index.js';
 import { useTheme } from '../theme/ThemeContext.js';
 import { GlobalStopControl } from './GlobalStopControl.js';
+import { Logo } from '../components/Logo/Logo.js';
 import styles from './AppShell.module.css';
 
 /** Keep in sync with `app/router.tsx`. */
@@ -37,7 +38,7 @@ export function AppShell() {
         {t('nav.skipToContent')}
       </a>
       <header className={styles.topBar}>
-        <span className={styles.brand}>Xenitex</span>
+        <Logo variant="mark" />
         <div className={styles.topBarActions}>
           <GlobalStopControl />
           <select

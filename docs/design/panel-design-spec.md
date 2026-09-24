@@ -60,35 +60,35 @@ Define these once in a single tokens file consumed by both themes. No component 
 Light theme:
 
 ```
-surface            #FAFAFB
-surface-sunken     #F2F3F5
+surface            #FAFBFC
+surface-sunken     #EFF2F5
 surface-raised     #FFFFFF
-border             #DDDFE3
-border-strong      #C2C6CC
-ink                #1A1D21
-ink-muted          #5A6069
-ink-subtle         #868D95
+border             #D8DEE6
+border-strong      #BFC9D4
+ink                #12161C
+ink-muted          #565F6B
+ink-subtle         #838D99
 ```
 
-Dark theme — the analyst's default, because this product is often open on a wall display or in a dim room:
+Dark theme — the analyst's default, because this product is often open on a wall display or in a dim room. Cool navy rather than neutral charcoal, so the brand mark (§3.6) sits on the same surface as everything else instead of looking pasted onto an unrelated grey:
 
 ```
-surface            #14171A
-surface-sunken     #0F1214
-surface-raised     #1C2024
-border             #2A2F35
-border-strong      #3B424A
-ink                #E6E8EA
-ink-muted          #9AA1A9
-ink-subtle         #6C747D
+surface            #0A0E14
+surface-sunken     #05070B
+surface-raised     #12181F
+border             #212A35
+border-strong      #313C4A
+ink                #E8EDF2
+ink-muted          #8D99A6
+ink-subtle         #5F6B78
 ```
 
-**Interactive accent — one hue, deliberately desaturated so it never competes with risk.**
+**Interactive accent — one hue, deliberately desaturated so it never competes with risk.** This is the brand cyan-blue (§3.6) at chrome-appropriate saturation. Blue sits maximally far on the colour wheel from every risk-ramp hue below (three warm, one green), so this hue is, if anything, less likely to be misread as a risk signal than a teal/green-adjacent accent would be — `UI-02` still holds.
 
 ```
-accent             #2D6E8E
-accent-hover       #255C78
-accent-subtle      #E8F1F5   (light)  /  #17303C (dark)
+accent             #2B8FD4
+accent-hover       #1F72AC
+accent-subtle      #E1F0FA   (light)  /  #0E2C3E (dark)
 ```
 
 **Risk ramp — five bands, ordered by luminance as well as hue so severity survives greyscale and colour-vision deficiency.**
@@ -127,6 +127,34 @@ risk-info          #5A6069
 - `UI-31` Two durations: 120ms for state change, 200ms for overlay entry and exit. One easing curve. Nothing longer.
 - `UI-32` Motion answers an action — a panel opening, a row expanding, a confirmation landing. Nothing animates on page load. `UI-16`
 - `UI-33` `prefers-reduced-motion` removes all transitions except opacity.
+
+## 3.5 Brand mark
+
+`Logo.tsx` (`apps/web/src/components/Logo/`) — a hexagon-and-target motif:
+the hexagon reads as the boundary an authorised scope defines, the
+concentric ring and centre dot read as a targeting reticle. Deliberately
+literal for a product whose entire pitch is "we observe your perimeter and
+report what we see," never touch it (`PRIN-01`).
+
+Two variants, no others:
+
+- **`mark`** — icon plus wordmark at 28px, for the persistent top bar. This
+  is functional chrome, so nothing about it competes with `UI-02`: one
+  static two-stop gradient confined to the icon's own strokes, no
+  animation, no glow spilling onto surrounding chrome.
+- **`lockup`** — icon at 56px, wordmark, and the "SCANNER PLATFORM" kicker,
+  for `AuthLayout` (`apps/web/src/auth/AuthLayout.tsx`) — the frame around
+  every pre-authentication screen (sign-in, MFA, forced password change,
+  setup wizard). This is the one screen in the product where a fuller brand
+  moment is appropriate, because nothing data-dense ever shares it: a
+  single low-opacity radial glow behind the mark is the one deliberate,
+  scoped exception to `UI-10`'s "no decorative glow" rule, and it never
+  appears once an authenticated screen is on screen.
+
+The wordmark is real text (`XENITE` + an accent-coloured `X`), not baked
+into the SVG — screen readers get "Xenitex" from the SVG's own `aria-label`
+on the icon and the wordmark text besides, and the accent colour on the
+final letter tracks `--color-accent` automatically if it is ever retuned.
 
 ---
 

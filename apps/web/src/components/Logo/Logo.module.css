@@ -1,0 +1,49 @@
+/**
+ * The brand mark's own gradient (cyan → deep blue) is a deliberate, scoped
+ * exception to UI-10's "no gradient washes" rule: that rule governs
+ * functional chrome and data surfaces, not a static logo. Nothing here
+ * animates, glows, or spills onto surrounding chrome.
+ */
+
+.lockupInline {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-4);
+}
+
+.wordmark {
+  font-family: var(--font-sans);
+  font-weight: var(--font-weight-semibold);
+  font-size: var(--font-size-md);
+  letter-spacing: 0.04em;
+  color: var(--color-ink);
+}
+
+.wordmarkAccentLetter {
+  color: var(--color-accent);
+}
+
+.lockupFull {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-4);
+  text-align: center;
+}
+
+.wordmarkLarge {
+  font-family: var(--font-sans);
+  font-weight: var(--font-weight-semibold);
+  font-size: var(--font-size-2xl);
+  letter-spacing: 0.06em;
+  color: var(--color-ink);
+}
+
+.kicker {
+  font-family: var(--font-sans);
+  font-weight: var(--font-weight-medium);
+  font-size: var(--font-size-2xs);
+  letter-spacing: 0.28em;
+  color: var(--color-ink-muted);
+  text-transform: uppercase;
+}

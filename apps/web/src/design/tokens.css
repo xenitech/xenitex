@@ -13,38 +13,52 @@
  */
 
 :root[data-theme='light'] {
-  --color-surface: #fafafb;
-  --color-surface-sunken: #f2f3f5;
+  --color-surface: #fafbfc;
+  --color-surface-sunken: #eff2f5;
   --color-surface-raised: #ffffff;
-  --color-border: #dddfe3;
-  --color-border-strong: #c2c6cc;
-  --color-ink: #1a1d21;
-  --color-ink-muted: #5a6069;
-  --color-ink-subtle: #868d95;
+  --color-border: #d8dee6;
+  --color-border-strong: #bfc9d4;
+  --color-ink: #12161c;
+  --color-ink-muted: #565f6b;
+  --color-ink-subtle: #838d99;
 
-  --color-accent-subtle: #e8f1f5;
+  --color-accent-subtle: #e1f0fa;
 }
 
+/**
+ * Dark is the analyst's default. The Xenitex mark (Logo.tsx) is a cyan
+ * hexagon on near-black, and this is that same near-black — cool navy
+ * rather than the previous neutral charcoal — so the brand mark, the topbar,
+ * and every panel share one surface instead of the logo looking pasted onto
+ * an unrelated grey. Still "cool, low chroma" per UI spec §3.1: this is a
+ * luminance/hue nudge on the neutral base, not a saturated colour — that
+ * budget stays reserved for the risk ramp below (UI-02).
+ */
 :root[data-theme='dark'] {
-  --color-surface: #14171a;
-  --color-surface-sunken: #0f1214;
-  --color-surface-raised: #1c2024;
-  --color-border: #2a2f35;
-  --color-border-strong: #3b424a;
-  --color-ink: #e6e8ea;
-  --color-ink-muted: #9aa1a9;
-  --color-ink-subtle: #6c747d;
+  --color-surface: #0a0e14;
+  --color-surface-sunken: #05070b;
+  --color-surface-raised: #121821;
+  --color-border: #212a35;
+  --color-border-strong: #313c4a;
+  --color-ink: #e8edf2;
+  --color-ink-muted: #8d99a6;
+  --color-ink-subtle: #5f6b78;
 
-  --color-accent-subtle: #17303c;
+  --color-accent-subtle: #0e2c3e;
 }
 
 :root {
   /* Interactive accent — one hue, deliberately desaturated (UI-02): it must
      never be mistaken for a risk signal. Same value in both themes; only
      -subtle varies (defined per-theme above) since it needs to sit quietly
-     against a very different surface luminance in each. */
-  --color-accent: #2d6e8e;
-  --color-accent-hover: #255c78;
+     against a very different surface luminance in each.
+     This is the brand cyan-blue (see Logo.tsx) at chrome-appropriate
+     saturation — blue sits maximally far on the wheel from every risk-ramp
+     hue below (three warm, one green), so shifting the accent this
+     direction, if anything, makes it LESS likely to be misread as a risk
+     signal than the previous teal was, not more (UI-02 still holds). */
+  --color-accent: #2b8fd4;
+  --color-accent-hover: #1f72ac;
 
   /* Risk ramp (UI-02, UI-17, UI-18): the ONLY saturated colours in the
      product. Ordered by luminance as well as hue so severity survives

@@ -1,6 +1,9 @@
 .card {
+  width: 100%;
   max-width: 400px;
-  margin: 15vh auto 0;
+  /* Vertical placement is AuthLayout's job now (it wraps every screen that
+     uses this class) — this only centres horizontally within that column. */
+  margin: 0 auto;
   padding: var(--space-8);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-panel);

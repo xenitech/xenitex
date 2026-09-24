@@ -120,6 +120,7 @@ export const en = {
     skipToContent: 'Skip to content',
   },
   auth: {
+    tagline: 'Discover · Analyze · Respond',
     signIn: {
       title: 'Sign in',
       email: 'Email',

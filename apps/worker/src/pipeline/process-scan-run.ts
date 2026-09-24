@@ -634,7 +634,16 @@ async function processObservations(
       const serviceName = unwrap(obs.untrustedEvidence.serviceName);
       const product = unwrap(obs.untrustedEvidence.product);
       const version = unwrap(obs.untrustedEvidence.version);
-      const portState = (obs.extractedAttributes as Record<string, unknown>).portState;
+      // The banner ITSELF can be the finding, not just a fingerprint of one
+      // — matchConfigurationFindings checks these for exactly that (a
+      // plaintext response with no TLS upgrade, a Basic-auth prompt sent
+      // over that same unencrypted connection). Only ever populated for the
+      // plaintext-HTTP ports the adapter probes with a HEAD request.
+      const httpStatusLine = unwrap(obs.untrustedEvidence.httpStatusLine);
+      const httpLocation = unwrap(obs.untrustedEvidence.httpLocation);
+      const httpWwwAuthenticate = unwrap(obs.untrustedEvidence.httpWwwAuthenticate);
+      const extractedAttributes = obs.extractedAttributes as Record<string, unknown>;
+      const portState = extractedAttributes.portState;
       if (portState !== 'open') continue; // MOD-04/ANTI-07: closed/filtered ports are recorded as observations, never as issues
 
       await upsertAssetService(
@@ -686,7 +695,18 @@ async function processObservations(
         });
       }
 
-      for (const finding of matchConfigurationFindings(obs.targetPort, serviceName)) {
+      const configurationFindings = matchConfigurationFindings({
+        port: obs.targetPort,
+        serviceNameUntrusted: serviceName,
+        httpStatusLine,
+        httpLocation,
+        httpWwwAuthenticate,
+        // A fact about the capture, computed by the adapter itself — never
+        // attacker-supplied text, so it travels in extractedAttributes
+        // rather than untrustedEvidence (SEC-17).
+        httpHeadersComplete: extractedAttributes.httpHeadersComplete === true,
+      });
+      for (const finding of configurationFindings) {
         await upsertIssue(db, {
           assetId,
           assetCriticality: asset.business_criticality,

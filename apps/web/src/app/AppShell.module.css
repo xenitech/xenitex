@@ -29,11 +29,6 @@
   flex-shrink: 0;
 }
 
-.brand {
-  font-weight: var(--font-weight-semibold);
-  font-size: var(--font-size-md);
-}
-
 .topBarActions {
   display: flex;
   align-items: center;
