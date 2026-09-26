@@ -1,9 +1,19 @@
 import type { Issue } from '../api/types.js';
 
 function csvCell(value: string): string {
-  // RFC 4180: quote and escape any cell that could otherwise break the row —
-  // including scanner-derived asset labels (SEC-17), which are untrusted input.
-  return /[",\n]/.test(value) ? `"${value.replaceAll('"', '""')}"` : value;
+  // RFC 4180 quoting, PLUS spreadsheet-formula-injection protection —
+  // matching apps/worker/src/pipeline/process-report.ts's escapeCsv, which
+  // this duplicates rather than imports (that file is worker-only code; this
+  // one runs in the browser). A cell starting with =, +, -, or @ is executed
+  // as a formula by Excel/LibreOffice when the analyst opens the exported
+  // file, and `assetLabelUntrusted`/`title` here are SEC-17 scanner-derived
+  // strings — a crafted hostname or banner is exactly the kind of value that
+  // reaches this function. The previous version only guarded against
+  // breaking the CSV's own row/column structure, not against the exported
+  // file executing something when opened.
+  let text = /^[=+\-@\t\r]/.test(value) ? `'${value}` : value;
+  if (/[",\n]/.test(text)) text = `"${text.replaceAll('"', '""')}"`;
+  return text;
 }
 
 /** "Export view" (docs/design/review.md): issues are system-detected, not user-created, so the header action exports the current view rather than creating something. */
